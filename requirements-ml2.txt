@@ -1,0 +1,16 @@
+# ---- Image / Video ----
+opencv-python==4.9.0.80
+Pillow==10.2.0
+
+# ---- TensorFlow (optional, analysis / comparison) ----
+tensorflow==2.15.0
+
+# ---- Utils ----
+protobuf==4.25.3
+absl-py==2.1.0
+termcolor==2.4.0
+six==1.16.0
+# wrapt==1.16.0はTensorFlowに依存しているので固定しない
+wrapt
+tqdm==4.66.1
+pyyaml==6.0.1

@@ -1,0 +1,8 @@
+# ---- Core numerical ----
+numpy==1.26.4
+scipy==1.11.4
+pandas==2.2.0
+
+# ---- Visualization & graph ----
+matplotlib==3.8.2
+networkx==3.2.1
