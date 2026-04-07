@@ -32,3 +32,40 @@ IoTデバイスの普及に伴い、エッジ側での高度なAI推論が求め
 ### Phase 3: アプリケーション開発と社会実装 (Vision)
 *[ ] **分散型AI監視システムの構築**: 小型エッジカメラから取得した映像を基に、人物認識や入退室管理をエッジ・クラウド協調でリアルタイムに実行。
 * [ ] **自動省エネ管理システムへの統合**: 室内人数を継続的にトラッキングし、在室者ゼロを検知した際に空調や照明の消し忘れを判定。SlackやLINE APIと連携した自動通知・制御システムを実装し、スマートなエネルギー管理に貢献する。
+
+---
+
+# Edge-Cloud Collaborative Split Inference Optimization for YOLOv8
+
+## Project Overview
+This project aims to build a **Dynamic Split Inference Framework** that maximizes overall system efficiency by dividing the inference process of the YOLOv8 object detection model between edge devices (e.g., Raspberry Pi) and the cloud (or high-performance servers). 
+Inspired by my experience developing smart systems during an AIoT research program at the National Science and Technology Development Agency (NSTDA) in Thailand, this research seeks to optimally orchestrate heavily resource-constrained edge environments with cloud computing power to realize a robust distributed AI system.
+
+## Background & Challenges
+With the proliferation of IoT devices, there is a growing demand for advanced AI inference at the edge. However, relying solely on edge devices often leads to a shortage of computational resources, while offloading entire raw data to the cloud incurs significant communication latency and bandwidth congestion.
+To address this, we adopt **Split Inference**, which partitions the neural network at a specific intermediate layer—executing the early layers on the edge and the remaining layers on the cloud.
+The primary challenge is the **dynamic identification of the optimal split point** that minimizes the total sum of "communication time" and "computation time," which fluctuate depending on dynamic network conditions and the computing capabilities of each node.
+
+## Methodology & Approach
+1. **Empirical Measurement-Based Optimization**: Instead of relying solely on simulations, the optimal split point is determined based on real-world benchmarking of computation and transmission times across actual hardware (e.g., Raspberry Pi and Mac).
+2. **Reduction of Computation & Communication Overhead**:
+    * **Intermediate Tensor Optimization**: Removing unnecessary gradient information (e.g., using `requires_grad=False` or `torch.no_grad()`) from the intermediate representation to reduce computational load and memory footprint.
+    * **Quantization**: Applying quantization techniques to both the model and the transferred tensors to significantly reduce communication bandwidth consumption.
+
+## Current Status
+* **Prototype Completed**: Successfully implemented basic split inference for YOLOv8 using TCP socket communication between a Raspberry Pi (Edge) and a MacBook (Server) within a Dockerized environment.
+* **Data Transmission Optimization**: Currently migrating the network transmission payload to a combination of `pickle` (for metadata) and `.pt` files (for PyTorch tensors) to optimize the payload strictly for pure inference data.
+
+## Future Milestones
+### Phase 1: Baseline Profiling & Optimization
+- [ ] Conduct high-precision measurements and profiling of computation and communication times per layer between the Raspberry Pi and MacBook.
+- [ ] Demonstrate superiority over Cloud-only Inference through further compression of inference tensors (computation reduction) and quantization (communication reduction).
+
+### Phase 2: Adaptation to Dynamic Environments & Scaling
+-[ ] Deploy the framework across diverse node environments, including lab servers, university supercomputers, and public clouds.
+- [ ] Expand the split inference pipeline to process continuous video streams rather than single static images.
+- [ ] Implement an autonomous algorithm to dynamically search and determine the optimal split point under varying conditions, such as heterogeneous multi-edge environments and fluctuating network bandwidths.
+
+### Phase 3: Application Development & Social Implementation (Vision)
+- [ ] **Distributed AI Surveillance System**: Develop an end-to-end system that performs real-time person recognition and access control by orchestrating lightweight edge cameras with cloud resources.
+- [ ] **Automated Energy Management Integration**: Implement a feature to continuously track room occupancy. Upon detecting zero occupancy, the system will identify forgotten air conditioning or lighting and trigger automated alerts/controls via Slack or LINE APIs, contributing to smart energy conservation.
