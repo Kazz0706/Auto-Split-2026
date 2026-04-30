@@ -19,8 +19,7 @@ IoTデバイスの普及に伴い、エッジ側での高度なAI推論が求め
 * **プロトタイプ構築**: Docker環境下において、Raspberry Pi（エッジ）とMacBook（サーバー想定）間でSocketを用いたTCP通信を実装し、YOLOv8の基本的な分割推論に成功。
 * **データ転送の最適化**: 現在、ネットワーク転送ペイロードを純粋な推論データに最適化するため、送信フォーマットを`pickle`（メタ情報）と`.pt`ファイル（PyTorchテンソル）の組み合わせへ移行中。
 
-[分割推論の出力結果]
-
+**[分割推論の出力結果]**
 ![Output by Split Inference](images/result_v1.jpg)
 
 ## 今後のマイルストーン (Future Milestones)
