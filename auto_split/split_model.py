@@ -20,6 +20,16 @@ class SplitYOLOWrapper:
         self.model.eval()
 
         self.layers = list(self.model.model)
+        # 各skipの最終使用位置を計算
+        # m.fのfは接続情報from(どこのレイヤーから来るか)
+        self.last_use = {}
+        for i, m in enumerate(self.layers):
+            if m.f != -1:
+                sources = m.f if isinstance(m.f, list) else [m.f]
+                for s in sources:
+                    # -1(直前のレイヤー)は除外
+                    if s >= 0:
+                        self.last_use[s] = i
 
 
     # -------------------------
@@ -63,47 +73,19 @@ class SplitYOLOWrapper:
 
         return img, img0, meta ### img0は必要？
 
-
     # -------------------------
     # Edge
     # -------------------------
     def run_edge(self, x, split_index, meta):
         # print(self.model.save) [4, 6, 9, 12, 15, 18, 21]
         y = []
+        cnt = 0
 
         for i, m in enumerate(self.layers):
 
             if i > split_index:
                 break
-
-            if m.f != -1:
-                if isinstance(m.f, int): # 単一入力の場合
-                    x_in = y[m.f]
-                else:
-                    x_in = [x if j == -1 else y[j] for j in m.f]
-            else:
-                x_in = x
-
-            x = m(x_in)
-            # self.model.saveは「スキップ接続で再利用される層番号」のリスト
-            y.append(x if m.i in self.model.save else None)
-
-        # x=Edgeの最終出力テンソル, y=中間保存テンソル群
-        # metaも一緒に返す
-        return x, y, meta
-
-    # -------------------------
-    # Cloud
-    # -------------------------
-    def run_cloud(self, x, saved_y, split_index, meta):
-
-        y = saved_y # 層番号のリスト
-
-        for i, m in enumerate(self.layers):
-
-            if i <= split_index:
-                continue
-
+            # skip/concat
             if m.f != -1:
                 if isinstance(m.f, int):
                     x_in = y[m.f]
@@ -112,7 +94,59 @@ class SplitYOLOWrapper:
             else:
                 x_in = x
 
-            x = m(x_in) # 重み・演算内容・接続情報を持つNNの1層
-            y.append(x if m.i in self.model.save else None)
+            x = m(x_in) # ニューラルネット1層のforward計算
 
-        return x, meta
+            # -------------------------
+            # 必要なcontextだけ保存
+            # -------------------------
+            # if i in self.last_use and i <= split_index < self.last_use[i]: # i <=はおそらくいらない
+            #    y.append(x)
+            # else:
+            #     y.append(None)
+            if i in self.model.save:
+                y.append(x)
+                cnt += 1 
+            else:
+                y.append(None)
+            # self.model.saveは「スキップ接続で再利用される層番号」のリスト
+            # y.append(x if m.i in self.model.save else None)
+            # -> Edgeで計算済みの中間テンソルまで全て保存されてしまう
+        # x=Edgeの最終出力テンソル, y=中間保存テンソル群
+        # metaも一緒に返す
+        print(f"中間特徴量個数{cnt}")
+        return x, y, meta
+
+    # -------------------------
+    # Cloud
+    # -------------------------
+    def run_cloud(self, x, saved_y, split_index):
+
+        y = saved_y.copy()
+
+        for i in range(split_index + 1, len(self.layers)):
+
+            m = self.layers[i]
+
+            if m.f != -1:
+
+                if isinstance(m.f, int):
+                    x_in = y[m.f]
+
+                else:
+                    x_in = [x if j == -1 else y[j] for j in m.f]
+
+            else:
+                x_in = x
+
+            x = m(x_in)
+
+            if i in self.model.save:
+                y.append(x)
+            else:
+                y.append(None)
+            
+            print("layer", i, "f=", m.f)
+            print("x shape", x.shape if isinstance(x, torch.Tensor) else None)
+            print("inputs", [type(t) for t in x_in] if isinstance(x_in,list) else type(x_in))
+
+        return x

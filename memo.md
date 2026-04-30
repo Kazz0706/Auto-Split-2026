@@ -508,3 +508,516 @@ while len(data) < n:
     data += packet
 ✔️ 意味
 小分けに届くデータを全部つなげる
+
+## サーバー用ソケットと通信用ソケットの違い
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:はサーバー用
+with conn:は通信用
+サーバー用の中にlisten(n)ならn個の通信用ソケットwith conn:が作れる
+| 変数     | 役割                 |
+| ------ | ------------------ |
+| `s`    | サーバソケット（待ち受け専用）    |
+| `conn` | 通信ソケット（recv/send用） |
+
+
+・tensor_buffer = io.BytesIO()
+メモリ上の仮想ファイルを作る。BytesIOはRAM上の .pt ファイル
+普通はtorch.save(tensor, "file.pt")ディスクに書き込む
+→しかしそれだと、ディスクI/O（遅い）、ファイル管理が必要なのでRAM上にファイルを作る方法を使っています。
+・torch.save(edge_out_q.cpu(), tensor_buffer)
+Tensor → PyTorch形式バイナリ
+edge_out_q → .pt形式 → tensor_buffer (RAM)
+GPU Tensor → CPU Tensorに変換。GPUメモリはpickleやsocket送信できないため
+・tensor_bytes = tensor_buffer.getvalue()
+
+BytesIOに保存されたデータをbytes型として取り出す。つまり.ptファイル（RAM上）→ raw bytes
+
+
+meta_bytes = json.dumps(meta).encode()
+metaはPythonのdict。
+meta = {
+ "scale": 0.75,
+ "pad": (0, 40),
+ "orig_shape": (1080,1920)
+}
+これをJSON化：json.dumps(meta)
+'{"scale":0.75,"pad":[0,40],"orig_shape":[1080,1920]}'
+bytes化：.encode()
+b'{"scale":0.75,"pad":[0,40],"orig_shape":[1080,1920]}'
+ソケット通信はbytesしか送れないため
+
+packet = {
+    "tensor": tensor_bytes,
+    "meta": meta_bytes,
+    "scale_q": scale_q.cpu().numpy(),
+    "split": split_point
+}
+packet
+ ├ tensor → YOLO中間特徴量
+ ├ meta → LetterBox情報
+ ├ scale_q → 量子化復元用
+ └ split → 分割位置
+
+scale_q.cpu().numpy()
+Tensor → numpyに変換するとpickleが軽くなる
+Tensorのままだとdevice, dtype, grad, storageなどが保存されてしまう。
+
+### tensor.save() vs pickle
+pickle＝汎用Pythonシリアライザ
+Tensor → pickleすると内部で
+Tensor
+ ├ dtype
+ ├ device
+ ├ requires_grad
+ ├ storage
+ ├ stride
+ ├ layout
+ └ metadata
+など大量の情報を処理します。加えて、Pythonオブジェクトとして再帰的にシリアライズ→遅い
+
+torch.saveはTensor専用なので
+Tensor
+ ├ dtype
+ ├ shape
+ └ raw memory
+をC++で高速バイナリ保存
+
+
+
+結論から言うと、**研究として綺麗なのは「完成後にアブレーションスタディで比較」**です。
+ただし、**metaの扱いは今のコードだと確かに冗長**なので整理した方がいいです。順番に説明します。
+
+---
+
+# ① torch.save vs pickle の比較はいつやるべきか
+
+あなたの研究の場合は **後でやるのが正しい**です。
+
+理由は研究の構造として
+
+```
+① システム完成
+② 最適化
+③ アブレーション
+```
+
+が基本だからです。
+
+今やると
+
+```
+torch.save vs pickle
+pickle vs json
+socket vs file
+```
+
+などが途中で増えてしまい、
+
+**実験の軸がブレます。**
+
+---
+
+## 論文や修論の構成
+
+普通はこう書きます
+
+### Method
+
+提案手法
+
+```
+Tensor → torch.save
+meta → json
+INT8 quantization
+```
+
+---
+
+### Experiment
+
+Baseline
+
+```
+pickle serialization
+```
+
+Proposed
+
+```
+torch.save serialization
+```
+
+---
+
+### Ablation Study
+
+```
+serialization
+quantization
+split position
+```
+
+例えば
+
+| Method            | Latency |
+| ----------------- | ------- |
+| pickle            | 120 ms  |
+| torch.save        | 95 ms   |
+| torch.save + INT8 | 70 ms   |
+
+---
+
+つまり
+
+**実装は先に完成させるべき。**
+
+その後
+
+```
+pickle版
+torch.save版
+```
+
+を比較します。
+
+---
+
+# ② 今やるべきこと
+
+あなたの研究の優先順位は
+
+```
+① Edge↔Cloud通信完成
+② latency測定
+③ split探索
+④ 最適化
+⑤ ablation
+```
+
+なので
+
+**serialization比較は④か⑤**
+
+です。
+
+---
+
+# ③ metaがcloudに必要か
+
+これは良い指摘です。
+
+結論
+
+```
+run_cloudには不要
+```
+
+です。
+
+あなたの理解は正しい。
+
+---
+
+### run_cloudの役割
+
+```
+Edge feature
+↓
+残りのYOLO layer
+↓
+Detection tensor
+```
+
+ここでは
+
+```
+画像サイズ
+scale
+padding
+```
+
+は一切使いません。
+
+つまり
+
+```
+meta不要
+```
+
+---
+
+# ④ metaが必要な場所
+
+metaが必要なのはここです
+
+```
+scale_boxes()
+```
+
+ここ。
+
+```
+det[:, :4] = scale_boxes(
+    meta["input_shape"],
+    det[:, :4],
+    meta["orig_shape"]
+)
+```
+
+理由
+
+YOLOは
+
+```
+640×640座標
+```
+
+で出力するからです。
+
+元画像が
+
+```
+1920×1080
+```
+
+なら
+
+```
+座標復元
+```
+
+が必要。
+
+---
+
+# ⑤ つまり役割はこう
+
+Edge
+
+```
+LetterBox
+↓
+meta作成
+```
+
+Cloud
+
+```
+推論
+↓
+NMS
+↓
+scale_boxes(meta)
+```
+
+---
+
+# ⑥ 今のコードの問題
+
+今は
+
+```
+run_cloud(x, context, split, meta)
+```
+
+になっていますが
+
+**metaは使っていない。**
+
+なので
+
+正しくは
+
+```
+run_cloud(x, context, split)
+```
+
+です。
+
+---
+
+# ⑦ 正しい構造
+
+---
+
+### 呼び出し
+
+```python
+final_result = wrapper.run_cloud(edge_out, context, split_point)
+```
+
+---
+
+### metaはここで使う
+
+```python
+det[:, :4] = scale_boxes(
+    meta["input_shape"],
+    det[:, :4],
+    meta["orig_shape"]
+)
+```
+
+---
+
+# ⑧ 研究的にはもっと重要なポイント
+
+実はあなたの研究で一番重要なのはここです
+
+```
+context を送る必要があるか？
+```
+
+YOLOは
+
+```
+skip connection
+```
+
+があるので
+
+```
+saved_y
+```
+
+を送る必要があります。
+
+しかし
+
+**これが通信量を増やします。**
+
+なので論文では
+
+```
+splitはskipの後にする
+```
+
+ことが多い。
+
+---
+
+# ⑨ 研究として綺麗な構造
+
+あなたの研究をまとめると
+
+```
+Edge
+画像
+↓
+LetterBox
+↓
+Edge layers
+↓
+INT8量子化
+↓
+torch.save
+↓
+socket
+
+Cloud
+socket受信
+↓
+torch.load
+↓
+Cloud layers
+↓
+NMS
+↓
+scale_boxes
+```
+
+metaは
+
+```
+scale_boxes専用
+```
+
+です。
+
+---
+
+# ⑩ 研究的に一番危険なポイント
+
+今あなたのコードには
+
+**もう一つ大きな研究ポイントがあります。**
+
+それは
+
+```
+context (skip connection)
+```
+
+です。
+
+YOLOv8nの場合
+
+```
+split位置によって
+通信量が10倍変わる
+```
+
+可能性があります。
+
+これは
+
+**AutoSplit論文の核心部分**
+
+です。
+
+---
+self.layersは以下の右の要素(nn.Module)を並べた全レイヤーのリスト(nn.ModuleList)
+self.layers
+│
+├ layer0  Conv
+├ layer1  C2f
+├ layer2  Conv
+├ layer3  C2f
+├ layer4  Conv
+├ layer5  C2f
+├ layer6  SPPF
+├ layer7  Upsample
+├ layer8  Concat
+├ layer9  C2f
+├ layer10 Upsample
+├ layer11 Concat
+├ layer12 C2f
+├ layer13 Detect
+
+x = m(x_in)はニューラルネット1層のforward計算
+例）x = Conv(x) は x = W * x + b を計算
+    x = C2f(x)はconv→bottleneck→concat→conv
+    x = Concat([x1, x2])は 内部でtorch.cat([x1, x2], dim=1)
+m.fはYOLO特有の接続情報(from)
+m.fが1入力ならConv, C2f, SPPF, Unsample, Detectなど普通のNN層
+m.fが複数入力ならAdd, Mul, Attention, Sumなど2つの要素を用いた計算をする層
+-> ResNetならAdd, YOLOv8の構造ではConcatしか使われない
+※YOLOv8は一つのブロック(レイヤー)内でAddやMulは使われることはあっても、ブロック単位ではconcatまたは単体計算になる
+ブロック内部(Conv, C2fなど) → Add / Mul あり
+ブロック接続(YOLOのレイヤー接続) → 単入力 or Concat
+
+## 描画の仕方
+方法①Ultralyticsを使う
+from ultralytics.engine.results import Results
+r = Results(
+    orig_img=orig_img,
+    path="img",
+    names=wrapper.yolo.names,
+    boxes=torch.tensor(boxes)
+)
+plotted = r.plot()
+cv2.imwrite("result.jpg", plotted)
+👉 これでラベル表示, 信頼度表示, 色付き, 太さ自動
+方法②OpenCVで自作描画（軽量・研究向け）
+for box in boxes:
+    x1,y1,x2,y2,conf,cls = box
+    label = f"{wrapper.yolo.names[int(cls)]} {conf:.2f}"
+    cv2.rectangle(orig_img,(int(x1),int(y1)),(int(x2),int(y2)),(0,255,0),3)
+    cv2.putText(
+        orig_img,
+        label,
+        (int(x1), int(y1)-10),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (0,255,0),
+        2
+    )
