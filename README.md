@@ -22,6 +22,44 @@ IoTデバイスの普及に伴い、エッジ側での高度なAI推論が求め
     *   **テンソル選別ロジック**: `last_use`（各テンソルの最終使用層）を解析するアルゴリズムを実装。後続層で不要なデータを即座に破棄し、スキップ接続（Skip Connection）に必要なデータのみを最小限の `context` (中間特徴量)として抽出することで、メモリ保持量と転送量を同時に削減します。
     *   **INT8量子化の実装**: 推論精度を維持しつつテンソルを圧縮する「INT8量子化・復元処理」をパイプラインに統合。通信帯域の消費を大幅に抑制します。
 
+## 従来研究との差異 (Difference from Prior Work)
+
+分割推論の代表的研究として、Huaweiの **Auto-Split** が挙げられる。
+Auto-Splitでは、ResNetやYOLOv3などを対象として、エッジ計算時間・通信時間・クラウド計算時間を事前プロファイリングし、それらの総和が最小となる分割点（Split Point）を選択するアプローチが採用されている。
+
+しかし、従来研究で主に対象とされてきたResNet系やYOLOv3は、比較的**直線的（Sequential）なネットワーク構造**を前提としている。
+
+一方、YOLOv8は以下の特徴を持つ。
+
+* **Skip Connection（スキップ接続）**
+* **FPN / PAN による特徴融合**
+* **Concatを伴う有向グラフ（DAG: Directed Acyclic Graph）構造**
+
+※FPN/PANは、画像の細かい形状情報と物体全体の意味情報を複数の層で結合し、小さい物体から大きい物体まで高精度に検出するための仕組みである。その結果、YOLOv8は単純な一直線構造ではなく、複数の特徴量が再利用される有向グラフ（DAG）構造を持つ。
+
+このため、単純に「ある層で分割して中間出力を送る」だけでは正しく推論を継続できない。
+
+例えば、クラウド側のConcat層では、分割点以前に生成された複数の中間特徴量が再利用される。そのため、YOLOv8の分割推論では、後続層で再利用される特徴量を追跡・保持する**依存関係管理（Dependency Management）**が不可欠となる。
+
+本研究では、この問題に対して：
+
+* 各層の入力元 (`m.f`)
+* テンソルの最終使用位置 (`last_use`)
+* 必要中間特徴量のみを抽出する `context` 管理
+
+を実装し、YOLOv8のDAG構造を考慮した分割推論を実現している。
+
+さらに、従来研究では通信時間を理論帯域（Bandwidth）から推定する手法も多いのに対し、本研究では：
+
+* 実機間ソケット通信
+* 量子化
+* Serialization / Deserialization
+* Tensor復元
+
+まで含めた**実測ベースの通信時間評価**を採用している。
+
+したがって本研究は、従来の「直線型ネットワークを対象とした分割推論」から一歩進み、**YOLOv8の複雑な特徴融合構造と実通信オーバーヘッドを考慮した、実運用志向のEdge–Cloud分割推論フレームワーク**として位置づけられる。
+
 ---
 
 ## システムアーキテクチャ (System Architecture & Flow)
@@ -164,6 +202,42 @@ The framework optimizes edge-cloud collaborative inference through two core pill
     *   **Gradient Stripping**: Removes unnecessary gradient information for inference to minimize computational and memory overhead.
     *   **Tensor Selection Logic**: Implements a `last_use` analysis algorithm (tracking the final usage layer for each tensor). It immediately discards data no longer needed in subsequent layers and extracts only the minimal required **`context` (intermediate features)** for skip connections, reducing both memory footprint and transmission size.
     *   **INT8 Quantization**: Integrates an "INT8 Quantization/Restoration" pipeline to compress tensors while maintaining accuracy, significantly suppressing bandwidth consumption.
+
+## Difference from Prior Work
+
+A representative study in split inference is Huawei's **Auto-Split** framework.
+Auto-Split targets models such as ResNet and YOLOv3, where edge computation time, communication latency, and cloud computation time are profiled in advance, and the split point is selected to minimize their total execution cost.
+
+However, models primarily considered in prior work, including ResNet-based architectures and YOLOv3, generally assume relatively **sequential network structures**.
+
+In contrast, YOLOv8 introduces the following characteristics:
+
+* **Skip Connections**
+* **Feature fusion through FPN / PAN**
+* **Directed Acyclic Graph (DAG) structures involving Concat operations**
+
+*FPN/PAN are feature fusion mechanisms that combine fine-grained spatial information with high-level semantic information across multiple layers, enabling accurate detection of both small and large objects. As a result, YOLOv8 does not follow a simple linear architecture but instead forms a DAG structure in which intermediate features are repeatedly reused.*
+
+Because of this structure, split inference cannot be performed simply by splitting the model at an arbitrary layer and transmitting a single intermediate output.
+
+For example, Concat layers executed on the cloud side may require multiple intermediate features generated before the split point. Therefore, YOLOv8 split inference requires explicit **dependency management** to track and preserve features reused by subsequent layers.
+
+To address this challenge, this work implements:
+
+* Layer input-source tracing (`m.f`)
+* Final tensor usage analysis (`last_use`)
+* `context` management for transmitting only required intermediate features
+
+These mechanisms enable split inference while preserving the DAG dependency structure of YOLOv8.
+
+Furthermore, while many previous studies estimate communication latency from theoretical bandwidth models, this work adopts an **empirical communication-time evaluation** that includes:
+
+* Real socket communication between devices
+* Quantization
+* Serialization / Deserialization
+* Tensor reconstruction overhead
+
+Therefore, this work extends beyond conventional split inference designed for linear network architectures and positions itself as a **practical Edge–Cloud split inference framework that explicitly considers YOLOv8's complex feature-fusion structure and real communication overheads**.
 
 ---
 
