@@ -2,7 +2,7 @@ import torch
 import cv2
 import numpy as np
 from ultralytics import YOLO
-from ultralytics.utils.ops import non_max_suppression
+# from ultralytics.utils.ops import non_max_suppression
 from ultralytics.engine.results import Results
 from ultralytics.data.augment import LetterBox
 from ultralytics.utils.ops import scale_boxes
@@ -20,6 +20,7 @@ class SplitYOLOWrapper:
         self.model.eval()
 
         self.layers = list(self.model.model)
+
         # 各skipの最終使用位置を計算
         # m.fのfは接続情報from(どこのレイヤーから来るか)
         self.last_use = {}
@@ -30,6 +31,25 @@ class SplitYOLOWrapper:
                     # -1(直前のレイヤー)は除外
                     if s >= 0:
                         self.last_use[s] = i
+        
+    def get_needed_context(self, split_index):
+
+        needed = set()
+
+        for i in range(split_index + 1, len(self.layers)):
+
+            m = self.layers[i]
+
+            if m.f != -1:
+
+                src = m.f if isinstance(m.f, list) else [m.f]
+
+                for s in src:
+
+                    if s >= 0 and s < split_index:
+                        needed.add(s)
+
+        return needed
 
 
     # -------------------------
@@ -76,21 +96,29 @@ class SplitYOLOWrapper:
     # -------------------------
     # Edge
     # -------------------------
-    def run_edge(self, x, split_index, meta):
-        # print(self.model.save) [4, 6, 9, 12, 15, 18, 21]
-        y = []
-        cnt = 0
+    def run_edge(self, x, split_index):
+        y = [None] * (split_index + 1)  # レイヤー番号でアクセスできるリスト
+        x_history = [None] * (split_index + 1)
+        needed = self.get_needed_context(split_index)
 
         for i, m in enumerate(self.layers):
-
             if i > split_index:
                 break
             # skip/concat
             if m.f != -1:
                 if isinstance(m.f, int):
-                    x_in = y[m.f]
+                    x_in = x_history[m.f]
+                    if m.f in self.last_use and self.last_use[m.f] == i:
+                        x_history[m.f] = None # 最後の使用であればメモリ解放
                 else:
-                    x_in = [x if j == -1 else y[j] for j in m.f]
+                    x_in = []
+                    for j in m.f:
+                        if j == -1:
+                            x_in.append(x)
+                        else:
+                            x_in.append(x_history[j])
+                            if self.last_use[j] == i:
+                                x_history[j] = None # 最後の使用であればメモリ解放
             else:
                 x_in = x
 
@@ -99,22 +127,16 @@ class SplitYOLOWrapper:
             # -------------------------
             # 必要なcontextだけ保存
             # -------------------------
-            # if i in self.last_use and i <= split_index < self.last_use[i]: # i <=はおそらくいらない
-            #    y.append(x)
-            # else:
-            #     y.append(None)
-            if i in self.model.save:
-                y.append(x)
-                cnt += 1 
-            else:
-                y.append(None)
-            # self.model.saveは「スキップ接続で再利用される層番号」のリスト
-            # y.append(x if m.i in self.model.save else None)
-            # -> Edgeで計算済みの中間テンソルまで全て保存されてしまう
+            if i in needed:
+                y[i] = x
+
+            if i in self.last_use and i < self.last_use[i] <= split_index:
+                x_history[i] = x
+
         # x=Edgeの最終出力テンソル, y=中間保存テンソル群
         # metaも一緒に返す
-        print(f"中間特徴量個数{cnt}")
-        return x, y, meta
+        print(f"中間特徴量{needed}")
+        return x, y
 
     # -------------------------
     # Cloud
@@ -122,6 +144,8 @@ class SplitYOLOWrapper:
     def run_cloud(self, x, saved_y, split_index):
 
         y = saved_y.copy()
+        if split_index in self.model.save:
+            y[split_index] = x
 
         for i in range(split_index + 1, len(self.layers)):
 
@@ -145,8 +169,8 @@ class SplitYOLOWrapper:
             else:
                 y.append(None)
             
-            print("layer", i, "f=", m.f)
-            print("x shape", x.shape if isinstance(x, torch.Tensor) else None)
-            print("inputs", [type(t) for t in x_in] if isinstance(x_in,list) else type(x_in))
+            # print("layer", i, "f=", m.f)
+            # print("x shape", x.shape if isinstance(x, torch.Tensor) else None)
+            # print("inputs", [type(t) for t in x_in] if isinstance(x_in,list) else type(x_in))
 
         return x

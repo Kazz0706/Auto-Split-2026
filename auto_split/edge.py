@@ -18,32 +18,39 @@ img_path = "images/test.jpg"
 # -------------------------
 # Timer start
 # -------------------------
-A_start = time.perf_counter()
-B_start = A_start
+F_start = time.perf_counter()
+B_start = F_start
 
 # 前処理
 img, orig_img, meta = wrapper.preprocess(img_path)
 
-split_point = 20
+split_point = 0
 print(f"split_point: {split_point}")
+
+F_end = time.perf_counter()
+
+A_start = time.perf_counter()
 
 # 勾配計算（＝学習用の計算）を完全にオフにする→計算速度向上, メモリ削減(全中間テンソルを保存しないため)
 with torch.inference_mode():
-    edge_out, context, meta = wrapper.run_edge(img, split_point, meta)
+    edge_out, context = wrapper.run_edge(img, split_point)
 
-print("save layers:", wrapper.model.save)
+# print("save layers:", wrapper.model.save)
 
-print("context positions:")
-for i,t in enumerate(context):
-    if t is not None:
-        print(i, t.shape)
+# print("context positions:")
+# for i,t in enumerate(context):
+#     if t is not None:
+#         print(i, t.shape)
+A_end = time.perf_counter()
 
+E_start = time.perf_counter()
 # -------------------------
 # 量子化（通信量削減）
 # -------------------------
 # float32 -> INT8: 通信量75%削減
 max_val = edge_out.abs().max()
-scale_q = max_val / 127
+# protect against zero max by clamping with a small epsilon
+scale_q = max_val.clamp_min(1e-8) / 127
 # INT8 tensorに変更
 edge_out_q = torch.round(edge_out / scale_q).to(torch.int8)
 
@@ -60,13 +67,26 @@ tensor_bytes = tensor_buffer.getvalue()
 context_buffer = io.BytesIO()
 
 # Noneを除いて保存 → 通信量削減, Noneのpickle経由防止
+
+
+# SplitYOLOWrapperのneeded集合を取得
+needed = wrapper.get_needed_context(split_point)
 context_indices = []
 context_tensors = []
-
-for i, t in enumerate(context):
+context_scales = []
+for i in sorted(needed):
+    t = context[i]
     if t is not None:
         context_indices.append(i)
-        context_tensors.append(t.cpu())
+        t_cpu = t.cpu()
+        max_val = t_cpu.abs().max()
+        # per-tensor scale with epsilon protection to avoid division-by-zero
+        scale_c = max_val.clamp_min(1e-8) / 127
+        scale_c_f = float(scale_c.cpu().item())
+        context_scales.append(scale_c_f)
+        context_tensors.append(torch.round(t_cpu / scale_c).to(torch.int8))
+
+print(f"送信context_indices: {context_indices}")
 
 # tensor list を保存
 torch.save(context_tensors, context_buffer)
@@ -80,14 +100,15 @@ packet = {
     "context": context_bytes,           # bytes
     "context_idx": np.array(context_indices, dtype=np.int32),     # list
     "meta": meta_bytes,
-    "scale_q": scale_q.cpu().numpy(), # 復元用
+    "scale_q": float(scale_q.cpu().item()), # 復元用 (safe float)
+    "context_scales": np.array(context_scales, dtype=np.float32),
     "split": split_point
 }
 
 # -------------------------
 # socket送信(ラズパイ→Mac)
 # -------------------------
-HOST = "192.168.12.29"  # ← MacのIP
+HOST = "192.168.12.30"  # ← MacのIP
 PORT = 5001 # ← MacのPORT
 
 data = pickle.dumps(packet)
@@ -95,7 +116,9 @@ data = pickle.dumps(packet)
 # 長さヘッダ（4byte）
 header = struct.pack(">I", len(data))
 
-A_end = time.perf_counter()
+E_end = time.perf_counter()
+
+print(f"Communication size (KB): {(4+len(data)) / 1024:.2f} KB")
 
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
     s.connect((HOST, PORT))
@@ -169,9 +192,13 @@ cloud_time = cloud_time
 total_time = B_end - B_start
 comm_time = (total_time - edge_time - cloud_time) / 2
 plot_time = D_end - D_start
+comp_time = E_end - E_start
+pre_time = F_end - F_start
 
 print("Edge time:", edge_time)
 print("Cloud time:", cloud_time)
 print("Communication time:", comm_time)
 print("Edge-Comm-Cloud time:", total_time)
 print("Plot time:", plot_time)
+print("Preprocessing time:", pre_time)
+print("compression time:", comp_time)

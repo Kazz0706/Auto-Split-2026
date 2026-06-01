@@ -64,11 +64,15 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         # -------------------------
         tensor_bytes = packet["tensor"]
         meta = json.loads(packet["meta"].decode()) # 研究デバッグ用(Macで可視化する為, 本来は不要)
-        meta = {
-            "input_shape": list(meta["input_shape"]),
-            "orig_shape": list(meta["orig_shape"])
-        }
-        scale_q = float(packet["scale_q"])
+        meta["input_shape"] = list(meta["input_shape"])
+        meta["orig_shape"] = list(meta["orig_shape"])
+
+        # protect against tiny or zero scales from the edge
+        eps = 1e-8
+        orig_scale_q = float(packet["scale_q"])
+        if orig_scale_q <= eps:
+            print(f"Warning: received scale_q={orig_scale_q} <= {eps}, clamping to {eps}")
+        scale_q = max(orig_scale_q, eps)
         split_point = packet["split"]
 
         buffer = io.BytesIO(tensor_bytes)
@@ -80,21 +84,24 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         # context tensor復元
         context_buffer = io.BytesIO(packet["context"])
         context_tensors = torch.load(context_buffer, map_location=wrapper.device)
+        context_scales = packet["context_scales"]
 
         context_idx = packet["context_idx"]
 
         print("context_idx:", context_idx)
-        print("context_tensors:", len(context_tensors))
 
-        # 元のcontext構造に復元
-        num_layers = len(wrapper.layers)
+        # 元のcontext構造に復元 (スケール値をイプシロンでクランプして安全化)
         context = [None] * (split_point+1)
 
-        for idx, tensor in zip(context_idx, context_tensors):
-            context[idx] = tensor
+        for idx, tensor, scale in zip(context_idx, context_tensors, context_scales):
+            s = float(scale)
+            if s <= eps:
+                print(f"Warning: context scale for idx {int(idx)} is {s} <= {eps}, clamping to {eps}")
+                s = eps
+            context[int(idx)] = tensor.float() * s
             
-        print("context length:", len(context))
-        print([type(x) for x in context])
+        # print("context length:", len(context))
+        # print([type(x) for x in context])
 
         # Start inference
         C_start = time.perf_counter()
@@ -136,7 +143,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 
         data = pickle.dumps(result_packet)
         header = struct.pack(">I", len(data))
-        print(f"header: {header}, header_type: {type(header)}")
+        # print(f"header: {header}, header_type: {type(header)}")
 
         conn.sendall(header + data)
 
