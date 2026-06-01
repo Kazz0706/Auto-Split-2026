@@ -144,7 +144,7 @@ yolov8n（全22レイヤー）において、**Split Layer = 3** を選択した
 # Edge-Cloud Collaborative Split Inference Optimization for YOLOv8
 
 ## Project Overview
-This project aims to build a **Dynamic Split Inference Framework** for YOLOv8 that distributes the inference workload between edge devices (e.g., Raspberry Pi) and cloud servers. The goal is to optimize end-to-end latency and communication costs by effectively coordinating resource-constrained edge environments with high-performance cloud computing.
+This project aims to build a **Split Inference Framework** for YOLOv8 that distributes the inference workload between edge devices (e.g., Raspberry Pi) and cloud servers. The goal is to optimize end-to-end latency and communication costs by effectively coordinating resource-constrained edge environments with high-performance cloud computing.
 
 Beyond simply splitting the model, this framework features **advanced memory management for Skip Connections** and **numerically stable quantization** to ensure robustness in real-world deployments.
 
