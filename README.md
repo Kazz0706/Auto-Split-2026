@@ -1,5 +1,5 @@
 # Edge-Cloud Collaborative Split Inference Optimization for YOLOv8
-
+(English version is available below.)
 ## プロジェクト概要 (Project Overview)
 本プロジェクトは、エッジデバイス（Raspberry Pi等）とクラウド間（またはクラウドサーバー）でYOLOv8の推論処理を分割実行し、システム全体の遅延と通信コストを最適化する「分割推論フレームワーク」の構築を目的とする。
 リソース制約の厳しいエッジ環境とクラウドの計算資源を最適に協調させる分散システムの実現を目指す。
@@ -7,7 +7,7 @@
 
 ## 背景と課題 (Background & Challenges)
 IoTデバイスの普及に伴い、エッジ側での高度なAI推論が求められているが、単一のエッジデバイスでは計算資源が不足し、クラウドへの全データ転送は通信遅延や帯域幅の圧迫を招く。
-本研究では、ニューラルネットワークの推論処理を特定の層で分割し、前半をエッジ、後半をクラウドで実行する「分割推論（Split Inference）」を採用する。
+本研究では、ニューラルネットワークの推論処理を特定の層で分割し、前半(分割レイヤーまで)をエッジ、後半をクラウドで実行する「分割推論（Split Inference）」を採用する。
 最大の課題は、ネットワーク状態や各ノードの計算能力に依存して変動する「通信時間」と「計算時間」の合計を最小化する**最適な分割点（Split Point）の特定**である。
 
 ## 手法とアプローチ (Methodology)
@@ -15,12 +15,12 @@ IoTデバイスの普及に伴い、エッジ側での高度なAI推論が求め
 本フレームワークでは、以下の2つの柱に基づきエッジ・クラウド協調推論を最適化しています。
 
 1. **実測ベースのプロファイリングと最適化**
-    *   **実機プロファイリング**: シミュレーションに頼らず、実機間での計算時間・通信時間を層ごとにプロファイリングし、実測値に基づいて分割点を決定します。
-    *   **Docker環境を用いた分割推論**: 分割点決定後は、エッジ、クラウドともに同じDocker環境を用いて分割推論を実行します。
+    * **実機プロファイリング**: シミュレーションに頼らず、実機間での計算時間・通信時間を分割点ごとに実測し、全体のレイテンシが最小となる分割点を決定。
+    * **Docker環境を用いた分割推論**: 分割点決定後は、エッジ、クラウドともに同じDocker環境を用いて分割推論を実行。
 2. **計算・通信効率の最大化**
-    *   **勾配情報の除去**: 推論に不要な勾配情報を除去し、計算およびメモリのオーバーヘッドを最小化しています。
-    *   **テンソル選別ロジック**: `last_use`（各テンソルの最終使用層）を解析するアルゴリズムを実装。後続層で不要なデータを即座に破棄し、スキップ接続（Skip Connection）に必要なデータのみを最小限の `context` (中間特徴量)として抽出することで、メモリ保持量と転送量を同時に削減します。
-    *   **INT8量子化の実装**: 推論精度を維持しつつテンソルを圧縮する「INT8量子化・復元処理」をパイプラインに統合。通信帯域の消費を大幅に抑制します。
+    * **推論モード (`torch.inference_mode()`) の利用**: 勾配計算を無効化し、推論時の計算負荷とメモリ消費を削減する。
+    * **中間特徴量の選別・保持**: YOLOv8のSkip Connectionを考慮し、クラウド側で必要となるエッジ側の中間特徴量のみを保持・転送する。
+    * **INT8量子化の実装**: 出力テンソルおよび中間特徴量をINT8へ圧縮・復元することで、通信データ量を大幅に削減している。
 
 ## 従来研究との差異 (Difference from Prior Work)
 
@@ -36,11 +36,11 @@ Auto-Splitは、ResNetやYOLOv3を対象に、エッジ計算・通信・クラ�
 * **Concatを伴う有向グラフ（DAG）構造**
 
 を持つ。  
-FPN/PANは、画像の細部情報と物体全体の意味情報を複数層で融合し、小物体から大物体まで高精度に検出する仕組みである。その結果、YOLOv8では過去の特徴量が後続層で再利用されるため、単純に「分割層の出力だけ」を送信しても推論を継続できない。
+FPN/PANは、画像の細部情報と物体全体の意味情報を複数層で融合し、小物体から大物体まで高精度に検出する仕組みである。その結果、YOLOv8では過去の特徴量が後続層(クラウド側)で再利用されるため、単純に「分割層の出力だけ」を送信しても推論を継続できない。
 
 本研究では、この問題に対し：
 
-* 各層の入力依存 (`m.f`)
+* クラウド側で再利用される特徴量のレイヤー番号を事前解析した集合(`needed`)
 * テンソル最終使用位置 (`last_use`)
 * 必要特徴量のみを保持する `context` 管理
 
@@ -70,7 +70,7 @@ sequenceDiagram
     
     rect rgb(240, 248, 255)
     Note over E: 2. エッジ側推論 (run_edge) と 特徴量抽出
-    E->>E: 分割点まで推論しつつ、<br/>後続層で必要なデータのみを選別保持
+    E->>E: 分割点まで推論しつつ、<br/>クラウド側で必要なデータのみを選別保持
     end
 
     E->>E: INT8量子化 (イプシロンによるゼロ割防止)
@@ -83,39 +83,38 @@ sequenceDiagram
     C->>E: 検出結果の返送 (Pickleバイト列)
     Note over E: 6. 結果の可視化 (Resultsオブジェクト)
 ```
+※Pickleは研究・ローカル環境用途を想定しており、信頼できない送信元に対しては安全ではない。
 
 ### 🛠 推論パイプラインの詳細
-
-1.  **[エッジ] 前処理 (Step 1)**: 入力画像を読み込み、`letterbox` 等を用いてYOLO入力サイズへの整形とテンソル化を行います。
-2.  **[エッジ] 推論実行と特徴量抽出 (Step 2)**: `run_edge` を実行。指定した `split_point` まで推論を進めながら、`needed` 集合（後続層で参照されるインデックス群）に基づき、クラウド側での再開に必要な中間特徴量（`context`）のみを選別して保持します。不要なデータは `last_use` 判定により即座に破棄されます。
-3.  **[エッジ] 量子化・シリアライズ**: 出力テンソルおよび選別した中間特徴量をINT8（整数）に量子化します。数値的安定性を保つためイプシロン保護（ゼロ割防止）を適用し、メタデータを含むバイナリデータを生成します。
-4.  **[通信] TCP送信**: 独自プロトコル（4バイト長ヘッダによるデータサイズ指定 ＋ ペイロード）を用いて、パケットをクラウドへ送信します。
-5.  **[クラウド] 受信・復元・推論継続 (Step 3 & 4)**: 受信バイナリから量子化係数を用いてテンソルを復元し、`run_cloud` を呼び出して計算グラフの残りの層を完遂させます。
-6.  **[クラウド] 後処理 (Step 5)**: 推論出力に対し NMS (Non-Maximum Suppression) を適用して重複する検出枠を除去し、`scale_boxes` で座標を元画像サイズへ復元します。
-7.  **[エッジ] 結果の可視化 (Step 6)**: 返送された検出結果を元画像に描画。`ultralytics.engine.results.Results` オブジェクトを介し、公式ライブラリ準拠の柔軟な可視化を行います。
+1. **[エッジ] 前処理 (Step 1)**: 入力画像を読み込み、`letterbox` を用いてYOLO入力サイズへの整形とテンソル化を行う。
+2. **[エッジ] 推論実行と特徴量抽出 (Step 2)**: `run_edge` を実行し、`split_point` まで推論を進める。`needed` 集合（クラウド側で再利用されるレイヤー番号）に基づき、推論再開に必要な中間特徴量（`context`）のみを保持する。また、`last_use` によりエッジ内部で不要になった特徴量を即時解放し、メモリ使用量を削減する。
+3. **[エッジ] 量子化・シリアライズ**: `edge_out` および `context` を INT8 に量子化する。ゼロ割防止のためイプシロン保護を適用し、メタデータを含むバイナリ形式へ変換する。
+4. **[通信] 4バイト長ヘッダによるTCP通信**: TCPはメッセージ境界を保証しないため、先頭4バイトにデータ長を付与し、受信側で必要サイズを正確に取得している。
+5. **[クラウド] 受信・復元・推論継続 (Step 3 & 4)**: 受信データを復元し、`run_cloud` により残りの計算グラフを実行する。
+6. **[クラウド] 後処理 (Step 5)**: NMS（Non-Maximum Suppression）で重複検出を除去し、`scale_boxes` を用いて検出結果の座標を元画像サイズへ復元する。
+7. **[エッジ] 結果の可視化 (Step 6)**: 返送された検出結果を元画像へ描画し、`ultralytics.engine.results.Results` オブジェクトを介して可視化する。
 
 ## 用語と主要概念 (Key Concepts)
-本システムのコードを理解するための主要な概念を以下にまとめます。
-
+本システムのコードを理解するための主要概念を以下にまとめる。
 ### 1. 分割推論のデータ制御
-*   **`run_edge` / `run_cloud`**: 
-    *   モデルを前後半に分け、エッジ側とクラウド側でそれぞれ担当範囲を実行する関数。
-*   **`split_point`**: 
-    *   「どこでネットワークを断つか」を示す層の番号（インデックス）。
-*   **`edge_out` と `context`**:
-    *   **`edge_out`**: 分割した層の「直接の出力」。
-    *   **`context`**: YOLOv8特有の「過去の層のデータを後で再利用する（Skip Connection）」ための控えデータ。**これがないとクラウド側で推論を再開できません。**
-*   **`needed` 集合**: 
-    *   「クラウド側が後で必要とするレイヤー番号」をあらかじめ集めたもの。これに基づき、送るべきデータのみを最小限に絞り込みます。
-*   **`last_use` (最終使用レイヤー判定)**:
-    *   各データが「最後にどの層で使われるか」を記録した辞書。この値を参照し、**「もう使わないデータは即座にメモリから破棄し、クラウドへも送らない」**という厳密なメモリ最適化を行っています。
+* **`run_edge` / `run_cloud`**  
+  モデルを前後半に分割し、エッジ側・クラウド側でそれぞれ担当範囲を実行する関数。
+* **`split_point`**  
+  ネットワークを分割する層番号（インデックス）。
+* **`edge_out` と `context`**  
+  * **`edge_out`**: 分割層の直接出力テンソル。  
+  * **`context`**: Skip Connection や Concat のためにクラウド側で再利用される中間特徴量。これがないと YOLOv8 の推論は正しく再開できない。
+* **`needed` 集合**  
+  クラウド側計算で必要となるレイヤー番号の集合。これを用いて送信すべき中間特徴量のみを選別する。
+* **`last_use` (最終使用レイヤー判定)**  
+  各特徴量がエッジ側で最後に利用される層を記録した辞書。推論中に不要となったテンソルを即時解放し、エッジ側メモリ使用量を削減する。
 
 ### 2. エンジニアリングの工夫
-*   **LetterBoxを用いた前処理**: 
-    *   画像のアスペクト比（縦横比）を維持したまま640×640へリサイズし、不足領域をパディングすることで物体の歪みを防ぎ、YOLOv8のstride構造と整合した入力を生成する。さらに、scale・pad情報を保持して検出座標を元画像へ正確に復元し、np.ascontiguousarray によりテンソル変換とメモリ転送を高速化している。
+*   **LetterBoxを用いた前処理**:
+    * アスペクト比を維持したまま画像を640×640へ整形し、物体の歪みを防ぐ。さらに、scale・pad情報を保持して検出座標を元画像へ正確に復元し、連続メモリ配置によりテンソル変換を高速化している。
 *   **イプシロン(ε)によるゼロ割防止**: 
     *   データをINT8（256段階の整数）に圧縮（量子化）する際、最大値が0だと計算エラーが発生します。極小値（イプシロン）を足すことで、**どんな入力に対してもシステムをクラッシュさせない堅牢性**を確保しています。
-*   **カスタムプロトコル (4バイト長ヘッダ)**: 
+*   **4バイト長ヘッダによるTCP通信**: 
     *   TCP通信は「データの切れ目」が保証されません。データの先頭に「今から何バイト送るか」という4バイトの情報を付与することで、**ストリーミング環境でも確実にデータを受信できる信頼性**を実装しています。
 *   **NMS (Non-Maximum Suppression)**: 
     *   AIは1つの物体に対して複数の「検出枠」を出してしまうことが多いため、最も確率の高い1つに絞り込む数学的な後処理です。
@@ -134,18 +133,18 @@ sequenceDiagram
 *   **MacBook 単体**: 131 ms
 
 ### 3. 分割推論の実行結果 (Experimental Results)
-yolov8n（全22レイヤー）において、**Split Layer = 3** を選択した際の計測データは以下の通りです。
+yolov8n（Ultralytics内部モジュール 22層）において、**Split Layer = 3** を選択した際の計測データを以下に示す。
 
 | 項目 | 計測値 | 備考 |
 | :--- | :--- | :--- |
 | **トータル処理時間** | **762.8 ms** | 前処理〜推論〜返送まで |
 | **前処理 (Preprocessing)** | **284.6 ms** | リサイズ等。**最大のボトルネック** |
 | **エッジ側計算時間 (Edge)** | 176.7 ms | レイヤー 0～3 |
-| **圧縮処理 (Compression)** | 4.8 ms | INT8量子化&シリアライズ。非常に軽量 |
-| **通信 (Communication)** | 191.1 ms | TCP転送 |
+| **圧縮処理 (Compression)** | 4.8 ms | INT8量子化・シリアライズ。非常に軽量 |
+| **通信 (Communication)** | 46.4 ms | TCP接続確立および双方向送受信時間からの片道近似 |
 | **クラウド側計算時間 (Cloud)** | 203.9 ms | レイヤー 4～21 |
-| **可視化処理(Visualization)** | 567.9ms | 描画処理。トータル処理時間には含めない |
-| **通信データサイズ** | 402.44 KB | |
+| **可視化処理 (Visualization)** | 567.9 ms | 描画処理。トータル処理時間には含めない |
+| **通信データサイズ** | 402.44 KB | 片道換算で約8.47 MB/s（推定実効帯域 ≒ 68 Mbps） |
 
 ### 4. 分析と考察
 *   **ボトルネックの特定**: 前処理（約280ms）が全体の約37%を占めており、ここが最大の最適化ポイントであることが判明しました。
@@ -177,59 +176,104 @@ yolov8n（全22レイヤー）において、**Split Layer = 3** を選択した
 ---
 
 # Edge-Cloud Collaborative Split Inference Optimization for YOLOv8
+(Japanese version is above.)
 
 ## Project Overview
-This project aims to build a **Split Inference Framework** for YOLOv8 that distributes the inference workload between edge devices (e.g., Raspberry Pi) and cloud servers. The goal is to optimize end-to-end latency and communication costs by effectively coordinating resource-constrained edge environments with high-performance cloud computing.
 
-Beyond simply splitting the model, this framework features **advanced memory management for Skip Connections** and **numerically stable quantization** to ensure robustness in real-world deployments.
+This project aims to develop a **split inference framework** that executes YOLOv8 inference collaboratively between **edge devices** (e.g., Raspberry Pi) and the **cloud** (or cloud servers), optimizing overall system latency and communication cost.
+
+The goal is to realize a distributed AI system that efficiently coordinates the limited computational resources of edge environments with the high-performance computing power of cloud systems.
+
+Rather than simply partitioning the model, this framework integrates:
+
+* **Memory management considering Skip Connections**
+* **Numerically stable quantization**
+
+as its key technical contributions.
+
+---
 
 ## Background & Challenges
-As AIoT devices proliferate, the demand for sophisticated on-device AI inference is rising. However, standalone edge devices often lack sufficient computational power, while offloading entire raw data streams to the cloud leads to high latency and bandwidth congestion.
 
-This research adopts **Split Inference**, where a neural network is divided at a specific layer: the early layers run on the edge, and the remaining layers are processed in the cloud. The primary challenge is the **dynamic identification of the optimal Split Point** to minimize the total cost (Computation Time + Communication Time) under fluctuating network conditions.
+With the rapid growth of IoT devices, advanced AI inference on edge devices has become increasingly important. However, a single edge device often lacks sufficient computational resources, while transmitting all raw data to the cloud introduces significant communication latency and bandwidth overhead.
+
+This work adopts **Split Inference**, where a neural network is partitioned at a specific layer:
+
+* the **front portion** (up to the split layer) runs on the edge
+* the **remaining portion** runs on the cloud
+
+The primary challenge is identifying the **optimal Split Point**, which minimizes the combined cost of:
+
+* **Communication time**
+* **Computation time**
+
+under varying network conditions and heterogeneous computing resources.
+
+---
 
 ## Methodology
-The framework optimizes edge-cloud collaborative inference through two core pillars:
 
-1. **Measurement-Based Profiling and Optimization**
-    *   **Real-Device Profiling**: Eschewing simulations, the system profiles per-layer computation and communication times on actual hardware to dynamically determine the split point based on real-world metrics.
-    *   **Consistent Docker Environments**: Both edge and cloud nodes utilize identical Docker-based environments to ensure seamless execution and portability.
+This framework optimizes edge–cloud collaborative inference through two main design principles.
 
-2. **Maximizing Computational and Communication Efficiency**
-    *   **Gradient Stripping**: Removes unnecessary gradient information for inference to minimize computational and memory overhead.
-    *   **Tensor Selection Logic**: Implements a `last_use` analysis algorithm (tracking the final usage layer for each tensor). It immediately discards data no longer needed in subsequent layers and extracts only the minimal required **`context` (intermediate features)** for skip connections, reducing both memory footprint and transmission size.
-    *   **INT8 Quantization**: Integrates an "INT8 Quantization/Restoration" pipeline to compress tensors while maintaining accuracy, significantly suppressing bandwidth consumption.
+### 1. Measurement-Based Profiling and Optimization
+
+* **Real-device profiling**  
+  Instead of relying on simulation, computation and communication times are directly measured between physical devices at different split points to identify the configuration with minimum end-to-end latency.
+
+* **Docker-based split inference**  
+  Once the split point is selected, both edge and cloud execute inference within the same Docker environment for reproducibility and portability.
+
+### 2. Maximizing Computational and Communication Efficiency
+
+* **Inference mode (`torch.inference_mode()`)**  
+  Gradient computation is disabled to reduce runtime overhead and memory usage during inference.
+
+* **Intermediate feature selection and retention**  
+  Considering YOLOv8 Skip Connections, only intermediate feature maps required by the cloud are retained and transmitted.
+
+* **INT8 quantization**  
+  Output tensors and intermediate features are compressed and reconstructed using INT8 quantization, significantly reducing communication volume.
+
+---
 
 ## Difference from Prior Work
 
-A representative study on split inference is Huawei's **Auto-Split**, which profiles edge computation, communication, and cloud computation costs in advance to select the split point minimizing total latency. However, prior work mainly targets relatively **sequential network architectures** such as ResNet and YOLOv3.
+A representative split inference study is Huawei's **Auto-Split**.
 
-In contrast, **YOLOv8** contains:
+Auto-Split targets models such as ResNet and YOLOv3, selecting the split point that minimizes total latency through prior profiling of:
+
+* Edge computation
+* Communication
+* Cloud computation
+
+However, most prior work assumes relatively **sequential network architectures**.
+
+YOLOv8, in contrast, includes:
 
 * **Skip Connections**
-* **FPN/PAN-based feature fusion**
+* **Feature fusion through FPN / PAN**
 * **Directed Acyclic Graph (DAG) structures with Concat operations**
 
-*FPN/PAN combines fine-grained spatial details and high-level semantic information across multiple layers, enabling accurate detection of both small and large objects. As a result, YOLOv8 forms a DAG structure where intermediate features are repeatedly reused rather than a simple linear pipeline.*
+FPN/PAN fuses fine-grained spatial information with high-level semantic information across multiple layers, enabling accurate detection of both small and large objects.
 
-Therefore, split inference in YOLOv8 cannot be achieved by merely transmitting the split-layer output. Later cloud layers may require intermediate features generated before the split point, making **dependency management** essential.
+As a consequence, YOLOv8 reuses intermediate features generated in earlier layers during later cloud-side computation. Therefore, transmitting only the split-layer output is insufficient for correctly resuming inference.
 
-To address this challenge, this work implements:
+To address this issue, this work implements:
 
-* Layer dependency tracking via `m.f`
-* Tensor lifetime analysis using `last_use`
-* Minimal intermediate feature extraction through `context` management
+* **`needed`**: a pre-analyzed set of layer indices reused on the cloud side
+* **`last_use`**: tensor final-use tracking
+* **`context` management**: retention of only required intermediate features
 
-to enable DAG-aware split inference for YOLOv8.
+This enables **split inference compatible with YOLOv8's DAG architecture**.
 
-Furthermore, while many previous studies estimate communication cost using theoretical bandwidth models, this framework adopts **measurement-based communication evaluation**, including:
+Furthermore, while many prior studies estimate communication latency using theoretical bandwidth models, this work performs **measurement-based communication evaluation** including:
 
-* Real socket communication between devices
-* Quantization / dequantization
-* Serialization / deserialization
-* Tensor reconstruction overhead
+* Real socket communication
+* INT8 quantization
+* Serialization / Deserialization
+* Tensor reconstruction
 
-As a result, this work extends conventional split inference beyond sequential networks and presents a **practical Edge–Cloud split inference framework that explicitly considers YOLOv8's complex feature fusion structure and real communication overheads**.
+Therefore, this study extends traditional split inference for sequential networks toward an **edge–cloud inference framework designed for practical deployment**, explicitly considering both YOLOv8's complex feature fusion structure and real communication overhead.
 
 ---
 
@@ -241,97 +285,212 @@ sequenceDiagram
     participant C as Cloud (Mac / GPU Server)
 
     Note over E: 1. Image Loading & Preprocessing (LetterBox)
-    
+
     rect rgb(240, 248, 255)
     Note over E: 2. Edge-side Inference (run_edge) & Feature Extraction
-    E->>E: Execute until Split Point,<br/>selecting only required data for cloud
+    E->>E: Run inference to split point<br/>while retaining only required features
     end
 
-    E->>E: INT8 Quantization (Epsilon protection)
-    E->>C: TCP Transmission (4-byte Header + Payload)
-    
-    Note over C: 3. Reception & Data Restoration (Dequantize)
+    E->>E: INT8 Quantization (epsilon-protected)
+    E->>C: TCP Transfer (4-byte length header + payload)
+
+    Note over C: 3. Receive & Restore (Dequantize)
     Note over C: 4. Cloud-side Inference (run_cloud)
-    Note over C: 5. Post-processing (NMS: Non-Maximum Suppression)
-    
-    C->>E: Return Detection Results (Pickle-byte stream)
-    Note over E: 6. Visualization (Results Object)
+    Note over C: 5. Post-processing (NMS)
+
+    C->>E: Detection Result Return (Pickle byte stream)
+    Note over E: 6. Visualization (Results object)
 ```
 
-### 🛠 Inference Pipeline Details
+*Pickle is used for research and trusted local environments and is not secure against untrusted inputs.*
 
-1.  **[Edge] Preprocessing (Step 1)**: Loads the input image and applies `letterbox` to resize it to the YOLO input size (640x640) while maintaining the aspect ratio, followed by tensorization.
-2.  **[Edge] Inference & Feature Extraction (Step 2)**: Executes `run_edge` up to the `split_point`. Based on the `needed` set (indices referenced by future layers), it selects and retains intermediate features (**`context`**) required for cloud-side resumption. Obsolete data is discarded immediately via `last_use` tracking.
-3.  **[Edge] Quantization & Serialization**: Quantizes the edge output and context tensors to INT8 (integers). It applies **Epsilon protection** (division-by-zero prevention) for numerical stability and generates a binary payload with metadata.
-4.  **[Communication] TCP Transmission**: Transmits the packet via a custom protocol (4-byte length header + payload) over a TCP socket.
-5.  **[Cloud] Reception, Restoration & Resumption (Step 3 & 4)**: Recovers the tensors from the binary stream using quantization scales and invokes `run_cloud` to complete the computation graph.
-6.  **[Cloud] Post-processing (Step 5)**: Applies NMS (Non-Maximum Suppression) to filter overlapping detection boxes and rescales coordinates back to the original image size using `scale_boxes`.
-7.  **[Edge] Result Visualization (Step 6)**: Receives and renders the detection results on the original image using the `ultralytics.engine.results.Results` object for flexible visualization.
+---
+
+## Detailed Inference Pipeline
+
+1. **[Edge] Preprocessing (Step 1)**  
+   Input images are loaded and resized using `letterbox`, producing YOLO-compatible tensors.
+
+2. **[Edge] Inference and Feature Extraction (Step 2)**  
+   `run_edge` executes inference up to `split_point`. Based on the `needed` set, only intermediate features required for cloud-side continuation (`context`) are retained. `last_use` immediately releases unnecessary tensors to reduce edge memory usage.
+
+3. **[Edge] Quantization and Serialization**  
+   `edge_out` and `context` are quantized into INT8 format. Epsilon protection prevents division-by-zero during scaling, and metadata is serialized into binary form.
+
+4. **[Communication] TCP with 4-byte Length Header**  
+   Since TCP does not preserve message boundaries, a 4-byte header containing payload size is attached to ensure accurate reception.
+
+5. **[Cloud] Reception, Reconstruction, and Inference Continuation (Step 3 & 4)**  
+   Received data are reconstructed and `run_cloud` completes the remaining computation graph.
+
+6. **[Cloud] Post-processing (Step 5)**  
+   NMS removes duplicated detections, and `scale_boxes` restores coordinates to the original image resolution.
+
+7. **[Edge] Visualization (Step 6)**  
+   Returned detection results are rendered using `ultralytics.engine.results.Results`.
 
 ## Key Concepts
 
-### 1. Split Inference Data Control
-*   **`run_edge` / `run_cloud`**: Functions that execute the early and later segments of the model respectively.
-*   **`split_point`**: The index indicating where the network computation is severed.
-*   **`edge_out` vs. `context`**:
-    *   **`edge_out`**: The direct output of the layer at the split point.
-    *   **`context`**: Cached data from previous layers required for Skip Connections. **Inference cannot resume in the cloud without this data.**
-*   **`needed` set**: Pre-calculated indices of layers required by the cloud side, used to prune non-essential data.
-*   **`last_use` (Final Usage Detection)**: A dictionary tracking the last layer to reference each tensor. This enables strict memory optimization by discarding data as soon as it is no longer required.
+The following concepts are central to understanding the implementation of this system.
 
-### 2. Engineering Insights
-*   **LetterBox Preprocessing**: Maintains aspect ratio and pads to 640x640 to prevent object distortion. It ensures compatibility with YOLOv8 stride structures and utilizes `np.ascontiguousarray` for faster tensor conversion.
-*   **Epsilon (ε) Protection**: During INT8 quantization, a tiny value (epsilon) is added to the divisor to prevent system crashes if the maximum value in a tensor is zero, ensuring **production-level robustness**.
-*   **Custom Protocol (4-byte Header)**: TCP does not guarantee message boundaries. By prefixing each message with its length, the system ensures **reliable data reconstruction** in streaming environments.
-*   **NMS (Non-Maximum Suppression)**: A mathematical post-process that consolidates multiple overlapping detection boxes into a single, high-confidence prediction.
+### 1. Data Control in Split Inference
 
-## Current Status & Results
+* **`run_edge` / `run_cloud`**  
+  Functions that divide the model into front and back segments, executing each portion on the edge and cloud respectively.
+
+* **`split_point`**  
+  The layer index where the network is partitioned.
+
+* **`edge_out` and `context`**  
+  * **`edge_out`**: Direct output tensor of the split layer.  
+  * **`context`**: Intermediate feature maps reused on the cloud side due to Skip Connections or Concat operations. Without these tensors, YOLOv8 inference cannot correctly resume.
+
+* **`needed` set**  
+  A set of layer indices required for cloud-side computation. This enables selective transmission of only necessary intermediate features.
+
+* **`last_use` (final-use layer tracking)**  
+  A dictionary recording the last layer where each feature tensor is used. Tensors no longer required are immediately released, reducing edge memory consumption.
+
+---
+
+## Engineering Techniques
+
+### LetterBox-based Preprocessing
+
+Images are resized to **640×640** while preserving aspect ratio, preventing geometric distortion.
+
+Additionally:
+
+* scale and padding information are retained for accurate coordinate restoration
+* contiguous memory layout accelerates tensor conversion and transfer
+
+### Epsilon (ε) Protection Against Division-by-Zero
+
+During INT8 quantization, scaling factors may become zero if tensor maximum values are zero.
+
+By applying a small epsilon value:
+
+* runtime errors are avoided
+* system robustness is maintained for arbitrary inputs
+
+ensuring stable quantization behavior.
+
+### TCP Communication with a 4-byte Length Header
+
+TCP does not preserve message boundaries.
+
+Therefore, this framework prepends a **4-byte payload length header**, allowing the receiver to reconstruct complete messages reliably in streaming environments.
+
+### NMS (Non-Maximum Suppression)
+
+Object detectors often generate multiple bounding boxes for the same object.
+
+NMS is a mathematical post-processing technique that retains only the highest-confidence prediction while suppressing redundant detections.
+
+### `ultralytics.engine.results.Results`
+
+A standard output representation provided by the YOLOv8 library.
+
+Using this interface simplifies:
+
+* visualization
+* saving
+* manipulation of detection results
+
+---
+
+## Current Status & Experimental Results
 
 ### 1. Prototype Environment
-*   **Edge Node**: Raspberry Pi 4 (Docker)
-*   **Cloud Node**: MacBook Pro (Docker)
-*   **Model**: YOLOv8n
 
-### 2. Standalone Latency (Baseline)
-*   **Raspberry Pi (Standalone)**: 357 ms
-*   **MacBook Pro (Standalone)**: 131 ms
+* **Edge**: Raspberry Pi 4 (Docker environment)
+* **Cloud**: MacBook Pro (Docker environment)
+* **Model**: YOLOv8n
 
-### 3. Split Inference Benchmark (Experimental Results)
-Measured data for YOLOv8n (22 layers) with **Split Layer = 3**:
+---
 
-| Item | Value | Notes |
+### 2. Baseline Inference Performance
+
+* **Raspberry Pi standalone**: 357 ms
+* **MacBook standalone**: 131 ms
+
+---
+
+### 3. Split Inference Results
+
+The following measurements were obtained for **YOLOv8n (22 internal Ultralytics modules)** using **Split Layer = 3**.
+
+| Metric | Measured Value | Notes |
 | :--- | :--- | :--- |
-| **Total Latency** | **762.8 ms** | E2E (Preprocess → Inference → Return) |
-| **Preprocessing** | **284.6 ms** | Resizing, etc. **The primary bottleneck.** |
-| **Edge Compute** | 176.7 ms | Layers 0–3 |
-| **Compression** | 4.8 ms | INT8 Quantization & Serialization. Extremely lightweight. |
-| **Communication** | 191.1 ms | TCP Transfer & Header Overhead |
-| **Cloud Compute** | 203.9 ms | Layers 4–21 |
-| **Visualization** | 567.9 ms | Rendering. (Excluded from Total Latency) |
-| **Payload Size** | 402.44 KB | |
+| **Total Processing Time** | **762.8 ms** | End-to-end pipeline |
+| **Preprocessing** | **284.6 ms** | Largest bottleneck |
+| **Edge Computation** | 176.7 ms | Layers 0–3 |
+| **Compression** | 4.8 ms | INT8 quantization + serialization |
+| **Communication** | 46.4 ms | One-way approximation derived from TCP connection establishment and bidirectional transmission time |
+| **Cloud Computation** | 203.9 ms | Layers 4–21 |
+| **Visualization** | 567.9 ms | Excluded from total latency |
+| **Communication Payload Size** | 402.44 KB | Approx. 8.47 MB/s effective throughput (≈ 68 Mbps) |
 
-### 4. Analysis & Observations
-*   **Bottleneck Identification**: Preprocessing accounts for ~37% of the total latency (284.6 ms), identifying it as the highest-priority target for future optimization.
-*   **Split Point Trends**: While Split Layer 3–4 is currently the most efficient configuration, the overhead from Docker and TCP networking currently causes higher latency than standalone Raspberry Pi execution.
-*   **Quantization Efficiency**: Compression takes less than 5 ms, proving that INT8 quantization is a viable strategy for balancing accuracy and communication volume.
+---
 
-**[Split Inference Output Result]**
+### 4. Analysis & Discussion
+
+### Bottleneck Identification
+
+Preprocessing (~285 ms) accounts for roughly **37% of total runtime**, making it the primary optimization target.
+
+### Split Point Behavior
+
+Split Layer **3–4** currently provides the best performance in this environment.
+
+However, communication and Docker overhead still cause total latency to exceed Raspberry Pi standalone inference (357 ms).
+
+### Quantization Effectiveness
+
+Compression itself requires less than **5 ms**, indicating that INT8 quantization provides an efficient trade-off between:
+
+* communication reduction
+* inference practicality
+* potential accuracy preservation
+
+and remains a key factor for future deployment.
+
+---
+
+**[Split Inference Output Example]**
+
 ![Output by Split Inference](images/result_v1.jpg)
 
 ---
 
 ## Future Milestones
 
-### Phase 1: Automated Profiling & Optimization
-* [ ] Build a profiling engine to automatically measure per-layer compute/comm times and find the mathematical optimal split point.
-* [ ] Migrate to high-performance GPU cloud servers and establish an Edge-Cloud inference server capable of handling continuous requests from multiple edge nodes.
-* [ ] Optimize the end-to-end pipeline (Preprocessing → Quantization → Comm).
+## Phase 1: Automated Profiling & Optimization
 
-### Phase 2: Dynamic Adaptation & Scaling
-* [ ] Deploy to diverse environments (Lab servers, HPC clusters, and Public Cloud).
-* [ ] Develop a split inference pipeline for continuous video streams rather than static images.
-* [ ] Implement an autonomous algorithm to adapt the split point in real-time based on fluctuating network bandwidth and device load.
+* [ ] Build an automated profiling framework that measures per-layer computation and communication costs across edge and cloud environments to identify optimal split layers.
+* [ ] Transition to GPU-enabled cloud servers and develop an Edge–Cloud inference server capable of continuously handling requests from multiple edge devices.
+* [ ] Optimize the end-to-end inference pipeline including preprocessing, inference execution, quantization/compression, and communication.
 
-### Phase 3: Application & Social Implementation (Vision)
-*   **Distributed AI Surveillance**: Real-time person recognition and access management using small edge cameras coordinated with the cloud.
-*   **Autonomous Energy Management**: Continuous occupancy tracking to detect empty rooms and automatically manage HVAC/lighting via Slack/Line API integration, contributing to smart city sustainability.
+---
+
+## Phase 2: Adaptation to Dynamic Environments & Scaling
+
+* [ ] Deploy the framework across heterogeneous environments such as laboratory servers, university supercomputers, and public cloud systems.
+* [ ] Extend from single-image inference to continuous **video-stream split inference pipelines**.
+* [ ] Develop adaptive algorithms that autonomously determine appropriate split points under:
+
+  * dynamic network bandwidth
+  * heterogeneous edge devices
+  * changing system conditions
+
+---
+
+## Phase 3: Applications & Social Deployment Vision
+
+### Distributed AI Surveillance System
+
+* [ ] Develop a distributed surveillance platform using compact edge cameras, enabling real-time person detection and access monitoring through edge–cloud collaborative inference.
+
+### Smart Energy Management Integration
+
+* [ ] Continuously track room occupancy and detect unoccupied spaces to identify unnecessary lighting or HVAC operation. Integrate with Slack or LINE APIs for automated notification and control, contributing to intelligent energy management systems.

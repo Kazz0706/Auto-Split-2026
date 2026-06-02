@@ -190,15 +190,15 @@ D_end = time.perf_counter()
 edge_time = A_end - A_start
 cloud_time = cloud_time
 total_time = B_end - B_start
-comm_time = (total_time - edge_time - cloud_time) / 2
 plot_time = D_end - D_start
 comp_time = E_end - E_start
 pre_time = F_end - F_start
+comm_time = (total_time - edge_time - cloud_time - pre_time - comp_time) / 2
 
 print("Edge time:", edge_time)
-print("Cloud time:", cloud_time)
-print("Communication time:", comm_time)
-print("Edge-Comm-Cloud time:", total_time)
-print("Plot time:", plot_time)
 print("Preprocessing time:", pre_time)
-print("compression time:", comp_time)
+print("Compression time:", comp_time)
+print("Communication time:", comm_time)
+print("Cloud time:", cloud_time)
+print("Total time(Except Plot time):", total_time)
+print("Plot time:", plot_time)
