@@ -22,6 +22,39 @@ IoTデバイスの普及に伴い、エッジ側での高度なAI推論が求め
     * **中間特徴量の選別・保持**: YOLOv8のSkip Connectionを考慮し、クラウド側で必要となるエッジ側の中間特徴量のみを保持・転送する。
     * **INT8量子化の実装**: 出力テンソルおよび中間特徴量をINT8へ圧縮・復元することで、通信データ量を大幅に削減している。
 
+## 現在の進捗と計測結果 (Current Status & Results)
+
+### 1. プロトタイプ環境
+*   **エッジ**: Raspberry Pi 4 (Docker環境)
+*   **クラウド**: MacBook Pro (Docker環境)
+*   **モデル**: YOLOv8n
+
+### 2. 単体推論時間 (Baseline)
+*   **Raspberry Pi 単体**: 357 ms
+*   **MacBook 単体**: 131 ms
+
+### 3. 分割推論の実行結果 (Experimental Results)
+yolov8n（Ultralytics内部モジュール 22層）において、**Split Layer = 3** を選択した際の計測データを以下に示す。
+
+| 項目 | 計測値 | 備考 |
+| :--- | :--- | :--- |
+| **トータル処理時間** | **762.8 ms** | 前処理〜推論〜返送まで |
+| **前処理 (Preprocessing)** | **284.6 ms** | リサイズ等。**最大のボトルネック** |
+| **エッジ側計算時間 (Edge)** | 176.7 ms | レイヤー 0～3 |
+| **圧縮処理 (Compression)** | 4.8 ms | INT8量子化・シリアライズ。非常に軽量 |
+| **通信 (Communication)** | 46.4 ms | TCP接続確立および双方向送受信時間からの片道近似 |
+| **クラウド側計算時間 (Cloud)** | 203.9 ms | レイヤー 4～21 |
+| **可視化処理 (Visualization)** | 567.9 ms | 描画処理。トータル処理時間には含めない |
+| **通信データサイズ** | 402.44 KB | 片道換算で約8.47 MB/s（推定実効帯域 ≒ 68 Mbps） |
+
+### 4. 分析と考察
+*   **ボトルネックの特定**: 前処理（約280ms）が全体の約37%を占めており、ここが最大の最適化ポイントであることが判明した。
+*   **分割点の傾向**: Split Layer = 3〜4 付近が現在の環境では最も高速だが、通信・Dockerのオーバーヘッドにより、現状はラズパイ単体での実行（357ms）を上回る遅延が発生している。
+*   **量子化の効果**: 圧縮処理自体は5ms以下と非常に高速であり、量子化による精度維持と通信量削減の両立が、実用化に向けた鍵となる。
+
+**[分割推論の出力結果]**
+![Output by Split Inference](images/result_v1.jpg)
+
 ## 従来研究との差異 (Difference from Prior Work)
 
 分割推論の代表的研究として、Huaweiの **Auto-Split** が挙げられる。  
@@ -227,39 +260,6 @@ sequenceDiagram
 *   **`ultralytics.engine.results.Results`**: 
     *   YOLOv8公式ライブラリが提供する標準的な出力形式。これを利用することで、検出結果の描画や保存を柔軟に行えます。
 
-## 現在の進捗と計測結果 (Current Status & Results)
-
-### 1. プロトタイプ環境
-*   **エッジ**: Raspberry Pi 4 (Docker環境)
-*   **クラウド**: MacBook Pro (Docker環境)
-*   **モデル**: YOLOv8n
-
-### 2. 単体推論時間 (Baseline)
-*   **Raspberry Pi 単体**: 357 ms
-*   **MacBook 単体**: 131 ms
-
-### 3. 分割推論の実行結果 (Experimental Results)
-yolov8n（Ultralytics内部モジュール 22層）において、**Split Layer = 3** を選択した際の計測データを以下に示す。
-
-| 項目 | 計測値 | 備考 |
-| :--- | :--- | :--- |
-| **トータル処理時間** | **762.8 ms** | 前処理〜推論〜返送まで |
-| **前処理 (Preprocessing)** | **284.6 ms** | リサイズ等。**最大のボトルネック** |
-| **エッジ側計算時間 (Edge)** | 176.7 ms | レイヤー 0～3 |
-| **圧縮処理 (Compression)** | 4.8 ms | INT8量子化・シリアライズ。非常に軽量 |
-| **通信 (Communication)** | 46.4 ms | TCP接続確立および双方向送受信時間からの片道近似 |
-| **クラウド側計算時間 (Cloud)** | 203.9 ms | レイヤー 4～21 |
-| **可視化処理 (Visualization)** | 567.9 ms | 描画処理。トータル処理時間には含めない |
-| **通信データサイズ** | 402.44 KB | 片道換算で約8.47 MB/s（推定実効帯域 ≒ 68 Mbps） |
-
-### 4. 分析と考察
-*   **ボトルネックの特定**: 前処理（約280ms）が全体の約37%を占めており、ここが最大の最適化ポイントであることが判明した。
-*   **分割点の傾向**: Split Layer = 3〜4 付近が現在の環境では最も高速だが、通信・Dockerのオーバーヘッドにより、現状はラズパイ単体での実行（357ms）を上回る遅延が発生している。
-*   **量子化の効果**: 圧縮処理自体は5ms以下と非常に高速であり、量子化による精度維持と通信量削減の両立が、実用化に向けた鍵となる。
-
-**[分割推論の出力結果]**
-![Output by Split Inference](images/result_v1.jpg)
-
 ---
 
 ## 今後のマイルストーン (Future Milestones)
@@ -339,6 +339,66 @@ This framework optimizes edge–cloud collaborative inference through two main d
 
 * **INT8 quantization**  
   Output tensors and intermediate features are compressed and reconstructed using INT8 quantization, significantly reducing communication volume.
+
+## Current Status & Experimental Results
+
+### 1. Prototype Environment
+
+* **Edge**: Raspberry Pi 4 (Docker environment)
+* **Cloud**: MacBook Pro (Docker environment)
+* **Model**: YOLOv8n
+
+---
+
+### 2. Baseline Inference Performance
+
+* **Raspberry Pi standalone**: 357 ms
+* **MacBook standalone**: 131 ms
+
+---
+
+### 3. Split Inference Results
+
+The following measurements were obtained for **YOLOv8n (22 internal Ultralytics modules)** using **Split Layer = 3**.
+
+| Metric | Measured Value | Notes |
+| :--- | :--- | :--- |
+| **Total Processing Time** | **762.8 ms** | End-to-end pipeline |
+| **Preprocessing** | **284.6 ms** | Largest bottleneck |
+| **Edge Computation** | 176.7 ms | Layers 0–3 |
+| **Compression** | 4.8 ms | INT8 quantization + serialization |
+| **Communication** | 46.4 ms | One-way approximation derived from TCP connection establishment and bidirectional transmission time |
+| **Cloud Computation** | 203.9 ms | Layers 4–21 |
+| **Visualization** | 567.9 ms | Excluded from total latency |
+| **Communication Payload Size** | 402.44 KB | Approx. 8.47 MB/s effective throughput (≈ 68 Mbps) |
+
+---
+
+### 4. Analysis & Discussion
+
+### Bottleneck Identification
+
+Preprocessing (~285 ms) accounts for roughly **37% of total runtime**, making it the primary optimization target.
+
+### Split Point Behavior
+
+Split Layer **3–4** currently provides the best performance in this environment.
+
+However, communication and Docker overhead still cause total latency to exceed Raspberry Pi standalone inference (357 ms).
+
+### Quantization Effectiveness
+
+Compression itself requires less than **5 ms**, indicating that INT8 quantization provides an efficient trade-off between:
+
+* communication reduction
+* inference practicality
+* potential accuracy preservation
+
+and remains a key factor for future deployment.
+
+**[Split Inference Output Example]**
+
+![Output by Split Inference](images/result_v1.jpg)
 
 ---
 
@@ -611,70 +671,6 @@ Using this interface simplifies:
 * visualization
 * saving
 * manipulation of detection results
-
----
-
-## Current Status & Experimental Results
-
-### 1. Prototype Environment
-
-* **Edge**: Raspberry Pi 4 (Docker environment)
-* **Cloud**: MacBook Pro (Docker environment)
-* **Model**: YOLOv8n
-
----
-
-### 2. Baseline Inference Performance
-
-* **Raspberry Pi standalone**: 357 ms
-* **MacBook standalone**: 131 ms
-
----
-
-### 3. Split Inference Results
-
-The following measurements were obtained for **YOLOv8n (22 internal Ultralytics modules)** using **Split Layer = 3**.
-
-| Metric | Measured Value | Notes |
-| :--- | :--- | :--- |
-| **Total Processing Time** | **762.8 ms** | End-to-end pipeline |
-| **Preprocessing** | **284.6 ms** | Largest bottleneck |
-| **Edge Computation** | 176.7 ms | Layers 0–3 |
-| **Compression** | 4.8 ms | INT8 quantization + serialization |
-| **Communication** | 46.4 ms | One-way approximation derived from TCP connection establishment and bidirectional transmission time |
-| **Cloud Computation** | 203.9 ms | Layers 4–21 |
-| **Visualization** | 567.9 ms | Excluded from total latency |
-| **Communication Payload Size** | 402.44 KB | Approx. 8.47 MB/s effective throughput (≈ 68 Mbps) |
-
----
-
-### 4. Analysis & Discussion
-
-### Bottleneck Identification
-
-Preprocessing (~285 ms) accounts for roughly **37% of total runtime**, making it the primary optimization target.
-
-### Split Point Behavior
-
-Split Layer **3–4** currently provides the best performance in this environment.
-
-However, communication and Docker overhead still cause total latency to exceed Raspberry Pi standalone inference (357 ms).
-
-### Quantization Effectiveness
-
-Compression itself requires less than **5 ms**, indicating that INT8 quantization provides an efficient trade-off between:
-
-* communication reduction
-* inference practicality
-* potential accuracy preservation
-
-and remains a key factor for future deployment.
-
----
-
-**[Split Inference Output Example]**
-
-![Output by Split Inference](images/result_v1.jpg)
 
 ---
 
