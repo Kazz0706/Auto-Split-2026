@@ -25,8 +25,8 @@ IoTデバイスの普及に伴い、エッジ側での高度なAI推論が求め
 ## 現在の進捗と計測結果 (Current Status & Results)
 
 ### 1. プロトタイプ環境
-*   **エッジ**: Raspberry Pi 4 (Docker環境)
-*   **クラウド**: MacBook Pro (Docker環境)
+*   **エッジ**: Raspberry Pi 5 (16GB SDRAM, Docker環境)
+*   **クラウド**: MacBook Pro (8GB SDRAM, Docker環境)
 *   **モデル**: YOLOv8n
 
 ### 2. 単体推論時間 (Baseline)
@@ -344,8 +344,8 @@ This framework optimizes edge–cloud collaborative inference through two main d
 
 ### 1. Prototype Environment
 
-* **Edge**: Raspberry Pi 4 (Docker environment)
-* **Cloud**: MacBook Pro (Docker environment)
+* **Edge**: Raspberry Pi 5 (16GB SDRAM, Docker environment)
+* **Cloud**: MacBook Pro (8GB SDRAM, Docker environment)
 * **Model**: YOLOv8n
 
 ---
