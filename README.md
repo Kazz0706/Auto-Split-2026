@@ -24,41 +24,38 @@ IoTデバイスの普及に伴い、エッジ側での高度なAI推論が求め
 
 ## 従来研究との差異 (Difference from Prior Work)
 
-分割推論の代表的研究として、Huaweiの **Auto-Split** が挙げられる。
-Auto-Splitでは、ResNetやYOLOv3などを対象として、エッジ計算時間・通信時間・クラウド計算時間を事前プロファイリングし、それらの総和が最小となる分割点（Split Point）を選択するアプローチが採用されている。
+分割推論の代表的研究として、Huaweiの **Auto-Split** が挙げられる。  
+Auto-Splitは、ResNetやYOLOv3を対象に、エッジ計算・通信・クラウド計算を事前プロファイリングし、総遅延が最小となる分割点（Split Point）を選択する手法である。
 
-しかし、従来研究で主に対象とされてきたResNet系やYOLOv3は、比較的**直線的（Sequential）なネットワーク構造**を前提としている。
+しかし、従来研究で主に扱われるResNet系やYOLOv3は、比較的**直線的（Sequential）なネットワーク構造**を前提としている。
 
-一方、YOLOv8は以下の特徴を持つ。
+一方、YOLOv8は：
 
-* **Skip Connection（スキップ接続）**
+* **Skip Connection**
 * **FPN / PAN による特徴融合**
-* **Concatを伴う有向グラフ（DAG: Directed Acyclic Graph）構造**
+* **Concatを伴う有向グラフ（DAG）構造**
 
-※FPN/PANは、画像の細かい形状情報と物体全体の意味情報を複数の層で結合し、小さい物体から大きい物体まで高精度に検出するための仕組みである。その結果、YOLOv8は単純な一直線構造ではなく、複数の特徴量が再利用される有向グラフ（DAG）構造を持つ。
+を持つ。  
+FPN/PANは、画像の細部情報と物体全体の意味情報を複数層で融合し、小物体から大物体まで高精度に検出する仕組みである。その結果、YOLOv8では過去の特徴量が後続層で再利用されるため、単純に「分割層の出力だけ」を送信しても推論を継続できない。
 
-このため、単純に「ある層で分割して中間出力を送る」だけでは正しく推論を継続できない。
+本研究では、この問題に対し：
 
-例えば、クラウド側のConcat層では、分割点以前に生成された複数の中間特徴量が再利用される。そのため、YOLOv8の分割推論では、後続層で再利用される特徴量を追跡・保持する**依存関係管理（Dependency Management）**が不可欠となる。
+* 各層の入力依存 (`m.f`)
+* テンソル最終使用位置 (`last_use`)
+* 必要特徴量のみを保持する `context` 管理
 
-本研究では、この問題に対して：
+を実装し、**YOLOv8のDAG構造に対応した分割推論**を実現している。
 
-* 各層の入力元 (`m.f`)
-* テンソルの最終使用位置 (`last_use`)
-* 必要中間特徴量のみを抽出する `context` 管理
+さらに、従来研究が理論帯域（Bandwidth）による通信推定を採用することが多いのに対し、本研究では：
 
-を実装し、YOLOv8のDAG構造を考慮した分割推論を実現している。
-
-さらに、従来研究では通信時間を理論帯域（Bandwidth）から推定する手法も多いのに対し、本研究では：
-
-* 実機間ソケット通信
-* 量子化
+* 実機ソケット通信
+* INT8量子化
 * Serialization / Deserialization
 * Tensor復元
 
-まで含めた**実測ベースの通信時間評価**を採用している。
+まで含めた**実測ベースの通信時間評価**を行っている。
 
-したがって本研究は、従来の「直線型ネットワークを対象とした分割推論」から一歩進み、**YOLOv8の複雑な特徴融合構造と実通信オーバーヘッドを考慮した、実運用志向のEdge–Cloud分割推論フレームワーク**として位置づけられる。
+したがって本研究は、従来の「直線型ネットワーク向け分割推論」を発展させ、**YOLOv8の複雑な特徴融合構造と実通信オーバーヘッドを考慮した、実運用志向のEdge–Cloud分割推論フレームワーク**として位置づけられる。
 
 ---
 
@@ -205,39 +202,34 @@ The framework optimizes edge-cloud collaborative inference through two core pill
 
 ## Difference from Prior Work
 
-A representative study in split inference is Huawei's **Auto-Split** framework.
-Auto-Split targets models such as ResNet and YOLOv3, where edge computation time, communication latency, and cloud computation time are profiled in advance, and the split point is selected to minimize their total execution cost.
+A representative study on split inference is Huawei's **Auto-Split**, which profiles edge computation, communication, and cloud computation costs in advance to select the split point minimizing total latency. However, prior work mainly targets relatively **sequential network architectures** such as ResNet and YOLOv3.
 
-However, models primarily considered in prior work, including ResNet-based architectures and YOLOv3, generally assume relatively **sequential network structures**.
-
-In contrast, YOLOv8 introduces the following characteristics:
+In contrast, **YOLOv8** contains:
 
 * **Skip Connections**
-* **Feature fusion through FPN / PAN**
-* **Directed Acyclic Graph (DAG) structures involving Concat operations**
+* **FPN/PAN-based feature fusion**
+* **Directed Acyclic Graph (DAG) structures with Concat operations**
 
-*FPN/PAN are feature fusion mechanisms that combine fine-grained spatial information with high-level semantic information across multiple layers, enabling accurate detection of both small and large objects. As a result, YOLOv8 does not follow a simple linear architecture but instead forms a DAG structure in which intermediate features are repeatedly reused.*
+*FPN/PAN combines fine-grained spatial details and high-level semantic information across multiple layers, enabling accurate detection of both small and large objects. As a result, YOLOv8 forms a DAG structure where intermediate features are repeatedly reused rather than a simple linear pipeline.*
 
-Because of this structure, split inference cannot be performed simply by splitting the model at an arbitrary layer and transmitting a single intermediate output.
-
-For example, Concat layers executed on the cloud side may require multiple intermediate features generated before the split point. Therefore, YOLOv8 split inference requires explicit **dependency management** to track and preserve features reused by subsequent layers.
+Therefore, split inference in YOLOv8 cannot be achieved by merely transmitting the split-layer output. Later cloud layers may require intermediate features generated before the split point, making **dependency management** essential.
 
 To address this challenge, this work implements:
 
-* Layer input-source tracing (`m.f`)
-* Final tensor usage analysis (`last_use`)
-* `context` management for transmitting only required intermediate features
+* Layer dependency tracking via `m.f`
+* Tensor lifetime analysis using `last_use`
+* Minimal intermediate feature extraction through `context` management
 
-These mechanisms enable split inference while preserving the DAG dependency structure of YOLOv8.
+to enable DAG-aware split inference for YOLOv8.
 
-Furthermore, while many previous studies estimate communication latency from theoretical bandwidth models, this work adopts an **empirical communication-time evaluation** that includes:
+Furthermore, while many previous studies estimate communication cost using theoretical bandwidth models, this framework adopts **measurement-based communication evaluation**, including:
 
 * Real socket communication between devices
-* Quantization
-* Serialization / Deserialization
+* Quantization / dequantization
+* Serialization / deserialization
 * Tensor reconstruction overhead
 
-Therefore, this work extends beyond conventional split inference designed for linear network architectures and positions itself as a **practical Edge–Cloud split inference framework that explicitly considers YOLOv8's complex feature-fusion structure and real communication overheads**.
+As a result, this work extends conventional split inference beyond sequential networks and presents a **practical Edge–Cloud split inference framework that explicitly considers YOLOv8's complex feature fusion structure and real communication overheads**.
 
 ---
 
