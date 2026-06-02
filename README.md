@@ -57,6 +57,99 @@ FPN/PANは、画像の細部情報と物体全体の意味情報を複数層で�
 
 したがって本研究は、従来の「直線型ネットワーク向け分割推論」を発展させ、**YOLOv8の複雑な特徴融合構造と実通信オーバーヘッドを考慮した、実運用志向のEdge–Cloud分割推論フレームワーク**として位置づけられる。
 
+## YOLOv8nのモデル構造 (YOLOv8n Model Architecture)
+
+YOLOv8n は大きく以下の3つの構成要素から成る。
+
+* **Backbone** – 入力画像から階層的な特徴量を抽出する部分
+* **Neck** – FPN/PAN により複数スケールの特徴量を融合し、小物体・大物体双方の検出性能を向上させる部分
+* **Head** – 複数スケールの特徴量を用いて最終的な物体検出を行う部分
+
+YOLOv8 は ResNet のような単純な直線型（Sequential）CNNではなく、**Skip Connection** と **Concat による特徴融合** を含む **DAG（Directed Acyclic Graph: 有向非巡回グラフ）構造** を採用している。
+
+この構造は検出精度向上に有効である一方、**分割推論（Split Inference）** においては「過去の特徴量が後段で再利用される」という課題を生む。
+
+### YOLOv8n レイヤー構造 (Ultralytics内部モジュール)
+
+```mermaid
+flowchart TD
+
+%% ===== Backbone =====
+subgraph Backbone["Backbone（特徴抽出）"]
+    L0["0 Conv<br/>3→16"] --> L1["1 Conv<br/>16→32"]
+    L1 --> L2["2 C2f<br/>32"]
+    L2 --> L3["3 Conv<br/>32→64"]
+    L3 --> L4["4 C2f<br/>64"]
+    L4 --> L5["5 Conv<br/>64→128"]
+    L5 --> L6["6 C2f<br/>128"]
+    L6 --> L7["7 Conv<br/>128→256"]
+    L7 --> L8["8 C2f<br/>256"]
+    L8 --> L9["9 SPPF<br/>256"]
+end
+
+%% ===== Neck =====
+subgraph Neck["Neck（FPN / PAN特徴融合）"]
+    L9 --> L10["10 Upsample"]
+    L10 --> L11["11 Concat"]
+    L6 --> L11
+
+    L11 --> L12["12 C2f"]
+
+    L12 --> L13["13 Upsample"]
+    L13 --> L14["14 Concat"]
+    L4 --> L14
+
+    L14 --> L15["15 C2f"]
+
+    L15 --> L16["16 Conv"]
+    L16 --> L17["17 Concat"]
+    L12 --> L17
+
+    L17 --> L18["18 C2f"]
+
+    L18 --> L19["19 Conv"]
+    L19 --> L20["20 Concat"]
+    L9 --> L20
+
+    L20 --> L21["21 C2f"]
+end
+
+%% ===== Head =====
+subgraph Head["Head（検出ヘッド）"]
+    L15 --> D["22 Detect"]
+    L18 --> D
+    L21 --> D
+end
+
+%% ===== Colors =====
+style Backbone fill:#D6EAF8,stroke:#1F618D,stroke-width:2px
+style Neck fill:#D5F5E3,stroke:#1E8449,stroke-width:2px
+style Head fill:#FADBD8,stroke:#922B21,stroke-width:2px
+```
+
+### 構造の概要
+
+| 構成要素 | 主なモジュール | 役割 |
+|---|---|---|
+| **Backbone** | Conv, C2f, SPPF | 低レベルから高レベルまでの画像特徴量を抽出 |
+| **Neck** | Upsample, Concat, C2f | FPN/PAN によるマルチスケール特徴融合 |
+| **Head** | Detect | Bounding Box とクラスの最終予測 |
+
+### YOLOv8nにおける分割推論の難しさ
+
+YOLOv8 は **完全な直線型モデルではない**。Skip Connection と Concat により、Backbone や Neck の途中で生成された特徴量（例: Layer 4, 6, 9）が後段の層で再利用される。
+そのため、分割推論では **「分割層の出力だけ」を送れば良いわけではない**。
+
+例えば：
+* **Layer11 ← Layer6**
+* **Layer14 ← Layer4**
+* **Layer17 ← Layer12**
+* **Layer20 ← Layer9**
+のような依存関係が存在する。
+
+したがってクラウド側で推論を正しく再開するには、分割層出力 (`edge_out`) に加え、依存解析によって特定された中間特徴量 (`context`) を適切に保持・転送する必要がある。
+本研究で実装した `needed`・`last_use`・`context` 管理は、この **YOLOv8のDAG構造に対応したSplit Inference** を実現するための中核技術である(詳細は後述)。
+
 ---
 
 ## システムアーキテクチャ (System Architecture & Flow)
@@ -147,9 +240,9 @@ yolov8n（Ultralytics内部モジュール 22層）において、**Split Layer 
 | **通信データサイズ** | 402.44 KB | 片道換算で約8.47 MB/s（推定実効帯域 ≒ 68 Mbps） |
 
 ### 4. 分析と考察
-*   **ボトルネックの特定**: 前処理（約280ms）が全体の約37%を占めており、ここが最大の最適化ポイントであることが判明しました。
-*   **分割点の傾向**: Split Layer = 3〜4 付近が現在の環境では最も高速ですが、通信・Dockerのオーバーヘッドにより、現状はラズパイ単体での実行（357ms）を上回る遅延が発生しています。
-*   **量子化の効果**: 圧縮処理自体は5ms以下と非常に高速であり、量子化による精度維持と通信量削減の両立が、実用化に向けた鍵となります。
+*   **ボトルネックの特定**: 前処理（約280ms）が全体の約37%を占めており、ここが最大の最適化ポイントであることが判明した。
+*   **分割点の傾向**: Split Layer = 3〜4 付近が現在の環境では最も高速だが、通信・Dockerのオーバーヘッドにより、現状はラズパイ単体での実行（357ms）を上回る遅延が発生している。
+*   **量子化の効果**: 圧縮処理自体は5ms以下と非常に高速であり、量子化による精度維持と通信量削減の両立が、実用化に向けた鍵となる。
 
 **[分割推論の出力結果]**
 ![Output by Split Inference](images/result_v1.jpg)
@@ -274,6 +367,102 @@ Furthermore, while many prior studies estimate communication latency using theor
 * Tensor reconstruction
 
 Therefore, this study extends traditional split inference for sequential networks toward an **edge–cloud inference framework designed for practical deployment**, explicitly considering both YOLOv8's complex feature fusion structure and real communication overhead.
+
+## YOLOv8n Model Architecture
+
+YOLOv8n consists of three major components:
+
+* **Backbone** – extracts hierarchical visual features from the input image.
+* **Neck** – fuses multi-scale features through FPN/PAN to improve detection performance for both small and large objects.
+* **Head** – performs final object detection using multi-scale prediction features.
+
+Unlike simple sequential CNNs such as ResNet, YOLOv8 adopts a **DAG (Directed Acyclic Graph)** architecture that incorporates **Skip Connections** and **Concat-based feature fusion**.
+
+While this design significantly improves detection accuracy, it also introduces challenges for **Split Inference**, since features generated in earlier layers may be reused later in the network.
+
+### YOLOv8n Layer Structure (Ultralytics Internal Modules)
+
+```mermaid
+flowchart TD
+
+%% ===== Backbone =====
+subgraph Backbone["Backbone (Feature Extraction)"]
+    L0["0 Conv<br/>3→16"] --> L1["1 Conv<br/>16→32"]
+    L1 --> L2["2 C2f<br/>32"]
+    L2 --> L3["3 Conv<br/>32→64"]
+    L3 --> L4["4 C2f<br/>64"]
+    L4 --> L5["5 Conv<br/>64→128"]
+    L5 --> L6["6 C2f<br/>128"]
+    L6 --> L7["7 Conv<br/>128→256"]
+    L7 --> L8["8 C2f<br/>256"]
+    L8 --> L9["9 SPPF<br/>256"]
+end
+
+%% ===== Neck =====
+subgraph Neck["Neck (FPN / PAN Feature Fusion)"]
+    L9 --> L10["10 Upsample"]
+    L10 --> L11["11 Concat"]
+    L6 --> L11
+
+    L11 --> L12["12 C2f"]
+
+    L12 --> L13["13 Upsample"]
+    L13 --> L14["14 Concat"]
+    L4 --> L14
+
+    L14 --> L15["15 C2f"]
+
+    L15 --> L16["16 Conv"]
+    L16 --> L17["17 Concat"]
+    L12 --> L17
+
+    L17 --> L18["18 C2f"]
+
+    L18 --> L19["19 Conv"]
+    L19 --> L20["20 Concat"]
+    L9 --> L20
+
+    L20 --> L21["21 C2f"]
+end
+
+%% ===== Head =====
+subgraph Head["Head (Detection Head)"]
+    L15 --> D["22 Detect"]
+    L18 --> D
+    L21 --> D
+end
+
+%% ===== Colors =====
+style Backbone fill:#D6EAF8,stroke:#1F618D,stroke-width:2px
+style Neck fill:#D5F5E3,stroke:#1E8449,stroke-width:2px
+style Head fill:#FADBD8,stroke:#922B21,stroke-width:2px
+```
+
+### Architecture Overview
+
+| Component | Main Modules | Role |
+|---|---|---|
+| **Backbone** | Conv, C2f, SPPF | Extract hierarchical image features from low to high semantic levels |
+| **Neck** | Upsample, Concat, C2f | Multi-scale feature fusion using FPN/PAN |
+| **Head** | Detect | Final bounding-box and class prediction |
+
+### Challenges of Split Inference in YOLOv8n
+
+YOLOv8 is **not a purely sequential model**.  
+Due to Skip Connections and Concat operations, features generated within the Backbone and Neck (e.g., Layers 4, 6, and 9) may be reused by later layers.
+
+Therefore, in split inference, **transmitting only the output of the split layer is insufficient**.
+
+For example, the following dependencies exist:
+
+* **Layer11 ← Layer6**
+* **Layer14 ← Layer4**
+* **Layer17 ← Layer12**
+* **Layer20 ← Layer9**
+
+As a result, to correctly resume inference on the cloud side, it is necessary to transfer not only the split-layer output (`edge_out`) but also intermediate features (`context`) identified through dependency analysis.
+
+The `needed`, `last_use`, and `context` mechanisms implemented in this work form the core technology enabling **Split Inference compatible with YOLOv8's DAG architecture** (details are described later).
 
 ---
 
