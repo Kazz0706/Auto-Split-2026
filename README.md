@@ -126,6 +126,8 @@ style Backbone fill:#D6EAF8,stroke:#1F618D,stroke-width:2px
 style Neck fill:#D5F5E3,stroke:#1E8449,stroke-width:2px
 style Head fill:#FADBD8,stroke:#922B21,stroke-width:2px
 ```
+※ モジュール内の数字は **レイヤー番号** と **チャネル数（Channels）** を表す。  
+`A→B` は **入力チャネル数 A、出力チャネル数 B** を意味する。
 
 ### 構造の概要
 
@@ -134,6 +136,17 @@ style Head fill:#FADBD8,stroke:#922B21,stroke-width:2px
 | **Backbone** | Conv, C2f, SPPF | 低レベルから高レベルまでの画像特徴量を抽出 |
 | **Neck** | Upsample, Concat, C2f | FPN/PAN によるマルチスケール特徴融合 |
 | **Head** | Detect | Bounding Box とクラスの最終予測 |
+
+### 主要モジュールの説明 (Module Descriptions)
+
+| モジュール | 説明 |
+|---|---|
+| **Conv** | 畳み込みによる特徴抽出とチャネル変換を行う基本層。 |
+| **C2f** | Skip Connection を含む YOLOv8 の特徴抽出ブロック。 |
+| **SPPF** | 広域コンテキストを効率的に取得するプーリング層。 |
+| **Upsample** | 特徴マップの解像度を拡大する処理。 |
+| **Concat** | 複数特徴量をチャネル方向に結合する演算。 |
+| **Detect** | Bounding Box とクラスを出力する検出ヘッド。 |
 
 ### YOLOv8nにおける分割推論の難しさ
 
@@ -437,6 +450,8 @@ style Backbone fill:#D6EAF8,stroke:#1F618D,stroke-width:2px
 style Neck fill:#D5F5E3,stroke:#1E8449,stroke-width:2px
 style Head fill:#FADBD8,stroke:#922B21,stroke-width:2px
 ```
+*Note:* Numbers inside each module indicate the **layer index** and **channel dimensions**.  
+`A→B` denotes **A input channels and B output channels**.
 
 ### Architecture Overview
 
@@ -445,6 +460,17 @@ style Head fill:#FADBD8,stroke:#922B21,stroke-width:2px
 | **Backbone** | Conv, C2f, SPPF | Extract hierarchical image features from low to high semantic levels |
 | **Neck** | Upsample, Concat, C2f | Multi-scale feature fusion using FPN/PAN |
 | **Head** | Detect | Final bounding-box and class prediction |
+
+### Module Descriptions
+
+| Module | Description |
+|---|---|
+| **Conv** | Basic convolution layer for feature extraction and channel transformation. |
+| **C2f** | YOLOv8 feature block with skip connections. |
+| **SPPF** | Pooling layer for efficient large-context aggregation. |
+| **Upsample** | Increases feature-map resolution. |
+| **Concat** | Concatenates feature maps along channel dimensions. |
+| **Detect** | Detection head for bounding-box and class prediction. |
 
 ### Challenges of Split Inference in YOLOv8n
 
