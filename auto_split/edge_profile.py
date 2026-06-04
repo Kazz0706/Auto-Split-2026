@@ -2,7 +2,9 @@ import time
 import torch
 from split_model import SplitYOLOWrapper
 
+t1 = time.perf_counter()
 wrapper = SplitYOLOWrapper("yolov8n.pt")
+t2 = time.perf_counter()
 
 img_path = "images/test.jpg"
 
@@ -12,7 +14,9 @@ split_layer = 22   # YOLOv8n最終層
 
 x = img
 y = []
-total = 0
+total_inference_time = 0
+
+t3 = time.perf_counter()
 
 print("\n===== EDGE PROFILE =====")
 
@@ -40,15 +44,15 @@ with torch.inference_mode():
         # -------------------------
         # layer time
         # -------------------------
-        t0 = time.perf_counter()
+        tl0 = time.perf_counter()
 
         x = m(x_in)
 
-        t1 = time.perf_counter()
+        tl1 = time.perf_counter()
 
-        layer_time = (t1 - t0) * 1000
+        layer_time = (tl1 - tl0) * 1000
 
-        total += layer_time
+        total_inference_time += layer_time
 
         print(f"Layer {i:2d} | {type(m).__name__:20s} | {layer_time:.3f} ms")
 
@@ -57,5 +61,9 @@ with torch.inference_mode():
             y.append(x)
         else:
             y.append(None)
-    
-    print(f"total time: {total}")
+    t4 = time.perf_counter()
+
+    print(f"Model loading time: {(t2 - t1)*1000:.3f} ms")
+    print(f"Preprocessing time: {(t3 - t2)*1000:.3f} ms")
+    print(f"total inference time: {total_inference_time}")
+    print(f"Total edge time(except model loading): {(t4 - t2)*1000:.3f} ms")

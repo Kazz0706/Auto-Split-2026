@@ -2,17 +2,21 @@ import time
 import torch
 from split_model import SplitYOLOWrapper
 
+load_start = time.perf_counter()
 wrapper = SplitYOLOWrapper("yolov8n.pt")
+load_end = time.perf_counter()
 
 img_path = "images/test.jpg"
 
 img, orig_img, meta = wrapper.preprocess(img_path)
 
+preprocess_end = time.perf_counter()
+
 split_layer = -1
 
 x = img
 y = []
-total = 0
+total_inference_time = 0
 
 print("\n===== CLOUD PROFILE =====")
 
@@ -37,15 +41,15 @@ with torch.inference_mode():
         # -------------------------
         # layer time
         # -------------------------
-        t0 = time.perf_counter()
+        layer_start = time.perf_counter()
 
         x = m(x_in)
 
-        t1 = time.perf_counter()
+        layer_end = time.perf_counter()
 
-        layer_time = (t1 - t0) * 1000
+        layer_time = (layer_end - layer_start) * 1000
 
-        total += layer_time
+        total_inference_time += layer_time
 
         print(f"Layer {i:2d} | {type(m).__name__:20s} | {layer_time:.3f} ms")
 
@@ -55,4 +59,9 @@ with torch.inference_mode():
         else:
             y.append(None)
     
-    print(f"Total time{total}")
+    end_time = time.perf_counter()
+
+    print(f"Model loading time: {(load_end - load_start)*1000:.3f} ms")
+    print(f"Preprocessing time: {(preprocess_end - load_end)*1000:.3f} ms")
+    print(f"Total inference time: {total_inference_time:.3f} ms")
+    print(f"Total cloud time(except model loading): {(end_time - load_end)*1000:.3f} ms")

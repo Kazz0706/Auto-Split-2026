@@ -50,14 +50,21 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
     with conn:
         print("Connected:", addr)
 
+        conn_start = time.perf_counter()
+
         # 4byteで長さ取得
         header = recvall(conn, 4) # headerで指定された長さのバイト列を取得
         msg_len = struct.unpack(">I", header)[0] # タプルのうち1番目（データ長）を取得
 
         # 本体受信
         data = recvall(conn, msg_len)
+        receive_end = time.perf_counter()
+
         # バイト列 -> Pythonのオブジェクト(bytes → dict（元のpacket）)
         packet = pickle.loads(data)
+        print(f"Receive time: {(receive_end - conn_start)*1000:.3f} ms")
+
+        restore_start = time.perf_counter()
 
         # -------------------------
         # 復元（dequantize）
@@ -100,6 +107,9 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s = eps
             context[int(idx)] = tensor.float() * s
             
+        restore_end = time.perf_counter()
+        print(f"Restore time: {(restore_end - restore_start)*1000:.3f} ms")
+
         # print("context length:", len(context))
         # print([type(x) for x in context])
 
@@ -112,9 +122,13 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         pred = final_result[0] if isinstance(final_result, (list, tuple)) else final_result
         pred = pred.detach().clone()
 
+        nms_start = time.perf_counter()
         # NMS
         pred = non_max_suppression(pred)
+        nms_end = time.perf_counter()
+        print(f"NMS time: {(nms_end - nms_start)*1000:.3f} ms")
 
+        restore_boxes_start = time.perf_counter()
         boxes = []
 
         for det in pred:
@@ -131,6 +145,8 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             )
 
             boxes.extend(det.cpu().numpy().tolist())
+        restore_boxes_end = time.perf_counter()
+        print(f"Box restore time: {(restore_boxes_end - restore_boxes_start)*1000:.3f} ms")
 
         C_end = time.perf_counter()
         cloud_time = C_end - C_start
@@ -143,9 +159,12 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 
         data = pickle.dumps(result_packet)
         header = struct.pack(">I", len(data))
-        # print(f"header: {header}, header_type: {type(header)}")
+        # print(f"header: {header}, header_type: {type(header)})")
 
+        send_start = time.perf_counter()
         conn.sendall(header + data)
+        send_end = time.perf_counter()
+        print(f"Send time: {(send_end - send_start)*1000:.3f} ms")
 
 
 # Macで元画像にboxをPlotしたい場合

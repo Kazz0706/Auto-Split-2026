@@ -11,25 +11,27 @@ import cv2
 from ultralytics.engine.results import Results
 from split_model import SplitYOLOWrapper   # 共通クラス
 
+load_start = time.perf_counter()
 wrapper = SplitYOLOWrapper("yolov8n.pt")
 
 img_path = "images/test.jpg"
+load_end = time.perf_counter()
 
 # -------------------------
 # Timer start
 # -------------------------
-F_start = time.perf_counter()
-B_start = F_start
+preprocess_start = time.perf_counter()
+total_start = preprocess_start
 
 # 前処理
 img, orig_img, meta = wrapper.preprocess(img_path)
 
-split_point = 0
+split_point = 3
 print(f"split_point: {split_point}")
 
-F_end = time.perf_counter()
+preprocess_end = time.perf_counter()
 
-A_start = time.perf_counter()
+edge_start = time.perf_counter()
 
 # 勾配計算（＝学習用の計算）を完全にオフにする→計算速度向上, メモリ削減(全中間テンソルを保存しないため)
 with torch.inference_mode():
@@ -41,9 +43,9 @@ with torch.inference_mode():
 # for i,t in enumerate(context):
 #     if t is not None:
 #         print(i, t.shape)
-A_end = time.perf_counter()
+edge_end = time.perf_counter()
 
-E_start = time.perf_counter()
+compression_start = time.perf_counter()
 # -------------------------
 # 量子化（通信量削減）
 # -------------------------
@@ -108,7 +110,7 @@ packet = {
 # -------------------------
 # socket送信(ラズパイ→Mac)
 # -------------------------
-HOST = "192.168.12.30"  # ← MacのIP
+HOST = "192.168.12.59"  # ← MacのIP
 PORT = 5001 # ← MacのPORT
 
 data = pickle.dumps(packet)
@@ -116,7 +118,7 @@ data = pickle.dumps(packet)
 # 長さヘッダ（4byte）
 header = struct.pack(">I", len(data))
 
-E_end = time.perf_counter()
+compression_end = time.perf_counter()
 
 print(f"Communication size (KB): {(4+len(data)) / 1024:.2f} KB")
 
@@ -147,10 +149,10 @@ boxes = result_packet["boxes"]
 meta = result_packet["meta"]
 cloud_time = result_packet["cloud_time"]
 
-B_end = time.perf_counter()
+total_end = time.perf_counter()
 
 # Calculate time
-D_start = time.perf_counter()
+plot_start = time.perf_counter()
 
 orig_img = cv2.imread(img_path)
 
@@ -184,21 +186,23 @@ r = Results(
 plotted = r.plot()
 cv2.imwrite("result.jpg", plotted)
 
-D_end = time.perf_counter()
+plot_end = time.perf_counter()
 
 # Calculate time
-edge_time = A_end - A_start
+load_time = load_end - load_start
+pre_time = preprocess_end - preprocess_start
+comp_time = compression_end - compression_start
+edge_time = edge_end - edge_start
 cloud_time = cloud_time
-total_time = B_end - B_start
-plot_time = D_end - D_start
-comp_time = E_end - E_start
-pre_time = F_end - F_start
-comm_time = (total_time - edge_time - cloud_time - pre_time - comp_time) / 2
+total_time = total_end - total_start
+plot_time = plot_end - plot_start
+comm_time = total_time - edge_time - cloud_time - pre_time - comp_time
 
-print("Edge time:", edge_time)
-print("Preprocessing time:", pre_time)
-print("Compression time:", comp_time)
-print("Communication time:", comm_time)
-print("Cloud time:", cloud_time)
-print("Total time(Except Plot time):", total_time)
-print("Plot time:", plot_time)
+print(f"Model loading time: {load_time*1000:.3f} ms")
+print(f"Edge time: {edge_time*1000:.3f} ms")
+print(f"Preprocessing time: {pre_time*1000:.3f} ms")
+print(f"Compression time: {comp_time*1000:.3f} ms")
+print(f"Communication time: {comm_time*1000:.3f} ms")
+print(f"Cloud time: {cloud_time*1000:.3f} ms")
+print(f"Total time (Except Model loading & Plot): {total_time*1000:.3f} ms")
+print(f"Plot time: {plot_time*1000:.3f} ms")

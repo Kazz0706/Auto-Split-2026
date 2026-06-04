@@ -25,32 +25,149 @@ IoTデバイスの普及に伴い、エッジ側での高度なAI推論が求め
 ## 現在の進捗と計測結果 (Current Status & Results)
 
 ### 1. プロトタイプ環境
-*   **エッジ**: Raspberry Pi 5 (16GB SDRAM, Docker環境)
-*   **クラウド**: MacBook Pro (8GB SDRAM, Docker環境)
-*   **モデル**: YOLOv8n
+
+* **エッジ**: Raspberry Pi 5 (16GB SDRAM, Docker環境)
+* **クラウド**: MacBook Pro (8GB SDRAM, Docker環境)
+* **モデル**: YOLOv8n
+* **入力画像**: 4032 × 3024 JPEG (約4.4 MB)
+
+---
 
 ### 2. 単体推論時間 (Baseline)
-*   **Raspberry Pi 単体**: 357 ms
-*   **MacBook 単体**: 131 ms
 
-### 3. 分割推論の実行結果 (Experimental Results)
-yolov8n（Ultralytics内部モジュール 22層）において、**Split Layer = 3** を選択した際の計測データを以下に示す。
+#### Raspberry Pi 5 (Docker)
 
-| 項目 | 計測値 | 備考 |
-| :--- | :--- | :--- |
-| **トータル処理時間** | **762.8 ms** | 前処理〜推論〜返送まで |
-| **前処理 (Preprocessing)** | **284.6 ms** | リサイズ等。**最大のボトルネック** |
-| **エッジ側計算時間 (Edge)** | 176.7 ms | レイヤー 0～3 |
-| **圧縮処理 (Compression)** | 4.8 ms | INT8量子化・シリアライズ。非常に軽量 |
-| **通信 (Communication)** | 46.4 ms | TCP接続確立および双方向送受信時間からの片道近似 |
-| **クラウド側計算時間 (Cloud)** | 203.9 ms | レイヤー 4～21 |
-| **可視化処理 (Visualization)** | 567.9 ms | 描画処理。トータル処理時間には含めない |
-| **通信データサイズ** | 402.44 KB | 片道換算で約8.47 MB/s（推定実効帯域 ≒ 68 Mbps） |
+| 項目 | 計測値 |
+| :--- | :--- |
+| Model Loading | 55.5 ms |
+| Preprocessing | 285.6 ms |
+| YOLOv8 Inference | 603.1 ms |
+| Total (Except Model Loading) | 891.9 ms |
 
-### 4. 分析と考察
-*   **ボトルネックの特定**: 前処理（約280ms）が全体の約37%を占めており、ここが最大の最適化ポイントであることが判明した。
-*   **分割点の傾向**: Split Layer = 3〜4 付近が現在の環境では最も高速だが、通信・Dockerのオーバーヘッドにより、現状はラズパイ単体での実行（357ms）を上回る遅延が発生している。
-*   **量子化の効果**: 圧縮処理自体は5ms以下と非常に高速であり、量子化による精度維持と通信量削減の両立が、実用化に向けた鍵となる。
+別途ベンチマークスクリプトによる30回平均：
+
+| 項目 | 計測値 |
+| :--- | :--- |
+| Average Latency | 775.5 ms |
+| FPS | 1.29 |
+| Min Latency | 742.6 ms |
+| Max Latency | 825.6 ms |
+
+#### MacBook Pro (Docker)
+
+| 実行回数 | 前処理 | 推論 | 合計 |
+| :--- | :--- | :--- | :--- |
+| 1回目 | 964.7 ms | 461.1 ms | 1427.8 ms |
+| 2回目 | 205.1 ms | 233.5 ms | 439.7 ms |
+| 3回目 | 230.6 ms | 261.7 ms | 493.2 ms |
+
+初回実行時には大きなウォームアップオーバーヘッドが観測された。
+
+---
+
+### 3. 分割推論の実行結果 (Split Layer = 3)
+
+YOLOv8n（Ultralytics内部モジュール22層）において、Split Layer = 3 を選択した場合の計測結果を示す。
+
+| 項目 | 1回目 | 2回目 | 3回目 | 4回目 | 5回目 |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| Preprocessing | 285.8 ms | 286.2 ms | 286.3 ms | 285.9 ms | 286.2 ms |
+| Edge | 177.1 ms | 177.9 ms | 176.6 ms | 179.1 ms | 176.4 ms |
+| Compression | 5.2 ms | 4.9 ms | 5.1 ms | 5.1 ms | 4.9 ms |
+| Communication | 215.9 ms | 97.4 ms | 69.9 ms | 61.8 ms | 65.9 ms |
+| Cloud | 545.2 ms | 322.7 ms | 215.2 ms | 284.5 ms | 179.7 ms |
+| Total | 1229.2 ms | 889.1 ms | 753.1 ms | 816.5 ms | 713.0 ms |
+
+通信データサイズ：
+
+| 項目 | 値 |
+| :--- | ---: |
+| Communication Size | 402.42 KB |
+
+Split Layer = 3 の場合、クラウド側で必要となる追加の中間特徴量は存在しないため、
+
+```python
+context_indices = []
+```
+
+となり、分割層出力 (`edge_out`) のみを送信して推論を継続できる。
+
+---
+
+### 4. クラウド側処理のウォームアップ特性
+
+クラウド側推論時間および通信時間は初回実行時に大きく増加し、その後安定化する傾向が確認された。
+
+| 実行回数 | Communication | Cloud |
+| :--- | ---: | ---: |
+| 1回目 | 215.9 ms | 545.2 ms |
+| 2回目 | 97.4 ms | 322.7 ms |
+| 3回目 | 69.9 ms | 215.2 ms |
+| 4回目 | 61.8 ms | 284.5 ms |
+| 5回目 | 65.9 ms | 179.7 ms |
+
+初回実行では TCP 接続確立、PyTorch 内部キャッシュ、メモリ確保、およびライブラリ初期化の影響により大きなオーバーヘッドが観測された。
+
+ウォームアップ後（2〜5回目）の平均値：
+
+| 項目 | 平均 |
+| :--- | ---: |
+| Communication | 73.8 ms |
+| Cloud | 250.5 ms |
+| Total | 792.9 ms |
+
+---
+
+### 5. 前処理時間の内訳
+
+入力画像：
+
+* Resolution: 4032 × 3024
+* Size: 約4.4 MB
+
+4回目実行時の詳細プロファイリング結果を示す。
+
+| 処理 | 時間 |
+| :--- | ---: |
+| `cv2.imread()` | 273.7 ms |
+| LetterBox Resize | 5.4 ms |
+| RGB変換 + Transpose | 0.7 ms |
+| Tensor変換 | 5.9 ms |
+| Device Transfer | 0.1 ms |
+
+これらの値は複数回実行してもほぼ変動しなかった。
+
+前処理全体（約286 ms）のうち約96%が JPEG デコード (`cv2.imread`) に費やされていることが確認された。
+
+---
+
+### 6. 分析と考察
+
+* **最大のボトルネックは推論ではなく画像読込である。**
+  * 前処理時間（約286ms）のうち約274msが `cv2.imread()` による JPEG デコードで占められていた。
+  * LetterBox や Tensor変換のコストは極めて小さい。
+
+* **分割推論による計算量削減は確認できた。**
+  * Raspberry Pi 単体推論では約603msを要するのに対し、Split Layer = 3 では Edge + Cloud 推論時間は約427ms（177ms + 250ms）まで削減された。
+
+* **通信オーバーヘッドが依然として支配的である。**
+  * 通信時間は平均約74msであり、推論高速化効果の一部を相殺している。
+
+* **クラウド側には顕著なウォームアップが存在する。**
+  * 初回実行では Cloud Time が 545ms に達したが、ウォームアップ後は約180〜320msで推移した。
+
+* **量子化のオーバーヘッドは極めて小さい。**
+  * INT8量子化およびシリアライズ処理は約5msであり、通信量削減に対して十分小さいコストで実現できている。
+
+* **Split Layer = 3 では追加特徴量転送が不要である。**
+  * `context_indices=[]` であり、分割層出力のみを送信して推論を再開できた。
+  * 一方で、より深い分割点では Skip Connection や Concat により中間特徴量の転送が必要となる。
+
+* **今後の最適化対象**
+  * カメラストリーム入力による JPEG デコード削減
+  * GPU搭載クラウドサーバーへの移行
+  * 動的Split Point選択アルゴリズムの実装
+  * 動画ストリーム向けSplit Inferenceへの拡張
 
 **[分割推論の出力結果]**
 ![Output by Split Inference](images/result_v1.jpg)
@@ -340,61 +457,158 @@ This framework optimizes edge–cloud collaborative inference through two main d
 * **INT8 quantization**  
   Output tensors and intermediate features are compressed and reconstructed using INT8 quantization, significantly reducing communication volume.
 
-## Current Status & Experimental Results
+## Current Status & Results
 
 ### 1. Prototype Environment
 
-* **Edge**: Raspberry Pi 5 (16GB SDRAM, Docker environment)
-* **Cloud**: MacBook Pro (8GB SDRAM, Docker environment)
+* **Edge Device**: Raspberry Pi 5 (16GB SDRAM, Docker environment)
+* **Cloud Device**: MacBook Pro (8GB SDRAM, Docker environment)
 * **Model**: YOLOv8n
+* **Input Image**: 4032 × 3024 JPEG (~4.4 MB)
 
 ---
 
 ### 2. Baseline Inference Performance
 
-* **Raspberry Pi standalone**: 357 ms
-* **MacBook standalone**: 131 ms
+#### Raspberry Pi 5 (Docker)
+
+| Item | Measured Value |
+| :--- | :--- |
+| Model Loading | 55.5 ms |
+| Preprocessing | 285.6 ms |
+| YOLOv8 Inference | 603.1 ms |
+| Total (Excluding Model Loading) | 891.9 ms |
+
+Average results over 30 runs using a separate benchmark script:
+
+| Item | Measured Value |
+| :--- | :--- |
+| Average Latency | 775.5 ms |
+| FPS | 1.29 |
+| Min Latency | 742.6 ms |
+| Max Latency | 825.6 ms |
+
+#### MacBook Pro (Docker)
+
+| Run | Preprocessing | Inference | Total |
+| :--- | ---: | ---: | ---: |
+| 1st | 964.7 ms | 461.1 ms | 1427.8 ms |
+| 2nd | 205.1 ms | 233.5 ms | 439.7 ms |
+| 3rd | 230.6 ms | 261.7 ms | 493.2 ms |
+
+A significant warm-up overhead was observed during the first execution.
 
 ---
 
-### 3. Split Inference Results
+### 3. Split Inference Results (Split Layer = 3)
 
-The following measurements were obtained for **YOLOv8n (22 internal Ultralytics modules)** using **Split Layer = 3**.
+The following measurements were obtained using **YOLOv8n (22 internal Ultralytics modules)** with **Split Layer = 3**.
 
-| Metric | Measured Value | Notes |
-| :--- | :--- | :--- |
-| **Total Processing Time** | **762.8 ms** | End-to-end pipeline |
-| **Preprocessing** | **284.6 ms** | Largest bottleneck |
-| **Edge Computation** | 176.7 ms | Layers 0–3 |
-| **Compression** | 4.8 ms | INT8 quantization + serialization |
-| **Communication** | 46.4 ms | One-way approximation derived from TCP connection establishment and bidirectional transmission time |
-| **Cloud Computation** | 203.9 ms | Layers 4–21 |
-| **Visualization** | 567.9 ms | Excluded from total latency |
-| **Communication Payload Size** | 402.44 KB | Approx. 8.47 MB/s effective throughput (≈ 68 Mbps) |
+| Item | 1st Run | 2nd Run | 3rd Run | 4th Run | 5th Run |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| Preprocessing | 285.8 ms | 286.2 ms | 286.3 ms | 285.9 ms | 286.2 ms |
+| Edge | 177.1 ms | 177.9 ms | 176.6 ms | 179.1 ms | 176.4 ms |
+| Compression | 5.2 ms | 4.9 ms | 5.1 ms | 5.1 ms | 4.9 ms |
+| Communication | 215.9 ms | 97.4 ms | 69.9 ms | 61.8 ms | 65.9 ms |
+| Cloud | 545.2 ms | 322.7 ms | 215.2 ms | 284.5 ms | 179.7 ms |
+| **Total** | **1229.2 ms** | **889.1 ms** | **753.1 ms** | **816.5 ms** | **713.0 ms** |
+
+Communication statistics:
+
+| Item | Value |
+| :--- | ---: |
+| Communication Size | 402.42 KB |
+
+For **Split Layer = 3**, no additional intermediate feature maps are required by the cloud side:
+
+```python
+context_indices = []
+```
+Therefore, only the split-layer output tensor (edge_out) is transmitted.
 
 ---
 
-### 4. Analysis & Discussion
+### 4. Cloud-Side Warm-Up Characteristics
 
-### Bottleneck Identification
+Both communication and cloud inference times exhibit a noticeable warm-up effect during the first execution.
 
-Preprocessing (~285 ms) accounts for roughly **37% of total runtime**, making it the primary optimization target.
+| Run | Communication | Cloud |
+| :--- | ---: | ---: |
+| 1st | 215.9 ms | 545.2 ms |
+| 2nd | 97.4 ms | 322.7 ms |
+| 3rd | 69.9 ms | 215.2 ms |
+| 4th | 61.8 ms | 284.5 ms |
+| 5th | 65.9 ms | 179.7 ms |
 
-### Split Point Behavior
+The first run incurs significant overhead due to:
 
-Split Layer **3–4** currently provides the best performance in this environment.
+* TCP connection establishment
+* PyTorch runtime initialization
+* Memory allocation
+* CPU cache warm-up
+* Internal library initialization
 
-However, communication and Docker overhead still cause total latency to exceed Raspberry Pi standalone inference (357 ms).
+Average values after warm-up (Runs 2–5):
 
-### Quantization Effectiveness
+| Item | Average |
+| :--- | ---: |
+| Communication | 73.8 ms |
+| Cloud | 250.5 ms |
+| Total | 792.9 ms |
 
-Compression itself requires less than **5 ms**, indicating that INT8 quantization provides an efficient trade-off between:
+---
 
-* communication reduction
-* inference practicality
-* potential accuracy preservation
+### 5. Preprocessing Breakdown
 
-and remains a key factor for future deployment.
+Input image:
+
+* Resolution: 4032 × 3024
+* File Size: ~4.4 MB
+
+Detailed profiling results from the 4th run are shown below.
+
+| Operation | Time |
+| :--- | ---: |
+| `cv2.imread()` | 273.7 ms |
+| LetterBox Resize | 5.4 ms |
+| RGB Conversion + Transpose | 0.7 ms |
+| Tensor Conversion | 5.9 ms |
+| Device Transfer | 0.1 ms |
+
+These values remained nearly identical across multiple executions.
+
+Approximately **96% of the preprocessing time** is spent on JPEG decoding (`cv2.imread()`).
+
+---
+
+### 6. Analysis and Discussion
+
+* **The primary bottleneck is image loading rather than neural network inference.**
+  * Of the ~286 ms preprocessing time, approximately 274 ms is consumed by JPEG decoding through `cv2.imread()`.
+  * LetterBox resizing and tensor conversion contribute only a small fraction of the total cost.
+
+* **Split inference successfully reduces computational workload on the edge device.**
+  * Raspberry Pi standalone inference requires approximately 603 ms.
+  * With Split Layer = 3, the combined Edge + Cloud inference time is reduced to approximately 427 ms (177 ms + 250 ms).
+
+* **Communication overhead remains significant.**
+  * Communication latency averages approximately 74 ms, partially offsetting the gains from distributed computation.
+
+* **A substantial cloud-side warm-up effect exists.**
+  * The first execution required 545 ms of cloud computation, while subsequent runs stabilized between approximately 180–320 ms.
+
+* **Quantization overhead is negligible.**
+  * INT8 quantization and serialization require only about 5 ms, making them highly effective for reducing transmission costs.
+
+* **No additional feature transfer is required at Split Layer = 3.**
+  * Since `context_indices = []`, the cloud can resume inference using only the split-layer output tensor.
+  * For deeper split points, however, intermediate feature maps generated by Skip Connections and Concat operations must also be transmitted.
+
+* **Future optimization targets**
+  * Reducing JPEG decoding overhead through direct camera-stream input
+  * Migrating to GPU-equipped cloud servers
+  * Implementing dynamic split-point selection algorithms
+  * Extending the framework to real-time video-stream split inference
 
 **[Split Inference Output Example]**
 

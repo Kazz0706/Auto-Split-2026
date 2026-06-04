@@ -11,7 +11,7 @@ from ultralytics import YOLO
 MODEL_PATH = "yolov8n.pt"
 IMAGE_PATH = "images/test.jpg"
 
-WARMUP = 5      # ウォームアップ回数
+WARMUP = 1      # ウォームアップ回数
 RUNS = 30       # 計測回数
 
 # -------------------------
@@ -29,7 +29,7 @@ print("Device:", device)
 # ウォームアップ
 # -------------------------
 print(f"Warmup {WARMUP} runs...")
-
+t0 = time.perf_counter()
 for _ in range(WARMUP):
     _ = model.predict(
         source=IMAGE_PATH,
@@ -38,6 +38,8 @@ for _ in range(WARMUP):
         verbose=False,
         device=device
     )
+t1 = time.perf_counter()
+print(f"Warmup time: {(t1 - t0)*1000:.2f} ms")
 
 # -------------------------
 # 本計測

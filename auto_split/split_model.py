@@ -1,5 +1,7 @@
 import torch
 import cv2
+import time
+import struct
 import numpy as np
 from ultralytics import YOLO
 # from ultralytics.utils.ops import non_max_suppression
@@ -57,8 +59,11 @@ class SplitYOLOWrapper:
     # -------------------------
     def preprocess(self, img_path):
         # JPEG / PNG → NumPy配列
+        t0 = time.perf_counter()
         img0 = cv2.imread(img_path) # OpenCVは BGR順
+        print(f"Original image shape: {img0.shape}") # (H, W, C)
         # 画像ではrow = y（縦）, col = x（横）のため、H, Wの順番
+        t1 = time.perf_counter()
         h0, w0 = img0.shape[:2] # (H0, W0, 3)から(H0, W0)を取り出す
 
         # YOLOと同じletterbox
@@ -66,7 +71,7 @@ class SplitYOLOWrapper:
         letterbox = LetterBox(new_shape=640, stride=32) # 640*640の正方形: 画像の長辺に合わせて余白は0で埋める
 
         img = letterbox(image=img0) # image: 入力画像
-
+        t2 = time.perf_counter()
         # -------------------------
         # meta情報計算
         # -------------------------
@@ -86,10 +91,20 @@ class SplitYOLOWrapper:
         img = img[:, :, ::-1]  # BGR → RGB
         img = img.transpose(2, 0, 1) # (H, W, C) → (C, H, W)=Pytorch仕様
         img = np.ascontiguousarray(img) # メモリを連続配置してPyTorch tensor変換高速化
+        t3 = time.perf_counter()
 
         img = torch.from_numpy(img).float() / 255.0 # 勾配爆発を防ぐため # floatを明示
         # バッチ次元追加: (3, 640, 640)→(1, 3, 640, 640)=YOLOの入力形式(N, C, H, W)
+        t4 = time.perf_counter()
+
         img = img.unsqueeze(0).to(self.device) # .to(self.device)でデバイス転送
+        t5 = time.perf_counter()
+
+        print("imread     :", (t1-t0)*1000)
+        print("letterbox  :", (t2-t1)*1000)
+        print("transpose  :", (t3-t2)*1000)
+        print("tensor     :", (t4-t3)*1000)
+        print("to device  :", (t5-t4)*1000)
 
         return img, img0, meta ### img0は必要？
 
