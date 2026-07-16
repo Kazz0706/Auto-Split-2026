@@ -1,10 +1,13 @@
 # 必要なライブラリ: pip install torch torchinfo ultralytics
 import torch
+from pathlib import Path
 from ultralytics import YOLO
 from torchinfo import summary
 
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+
 # 1. 最新のYOLOモデルをロード (重みも自動ダウンロードされます)
-model = YOLO('yolov8n.pt') 
+model = YOLO(PROJECT_DIR / "models" / "yolov8n.pt")
 
 # 2. モデルの構造と、各層のパラメータ数、出力サイズを一瞬で表示
 # (input_sizeは [Batch, Channel, Height, Width])

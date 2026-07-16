@@ -1,10 +1,13 @@
 import torch
 from ultralytics import YOLO
 import torch.fx
+from pathlib import Path
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 def analyze_yolo_graph():
     # 1. モデルロード
-    model = YOLO("yolov8n.pt")
+    model = YOLO(PROJECT_DIR / "models" / "yolov8n.pt")
     
     # 2. PyTorchモデル本体を取り出す
     # YOLOv8は .model という属性にnn.Moduleを持っています

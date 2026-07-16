@@ -1,0 +1,7 @@
+.git/
+.DS_Store
+**/.DS_Store
+**/__pycache__/
+**/*.pyc
+auto_split/outputs/
+venv/

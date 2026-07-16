@@ -3,13 +3,15 @@
 
 import time
 import torch
+from pathlib import Path
 from ultralytics import YOLO
 
 # -------------------------
 # 設定
 # -------------------------
-MODEL_PATH = "yolov8n.pt"
-IMAGE_PATH = "images/test.jpg"
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+MODEL_PATH = PROJECT_DIR / "models" / "yolov8n.pt"
+IMAGE_PATH = PROJECT_DIR / "samples" / "test.jpg"
 
 WARMUP = 1      # ウォームアップ回数
 RUNS = 30       # 計測回数

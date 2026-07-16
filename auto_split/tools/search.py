@@ -2,15 +2,17 @@ import torch
 import time
 import pickle
 import numpy as np
-from split_model import SplitYOLOWrapper
+from pathlib import Path
+from auto_split.src.split_model import SplitYOLOWrapper
 
 
 # -------------------------
 # 設定
 # -------------------------
 
-MODEL = "yolov8n.pt"
-IMG = "images/test.jpg"
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+MODEL = PROJECT_DIR / "models" / "yolov8n.pt"
+IMG = PROJECT_DIR / "samples" / "test.jpg"
 
 # 帯域 (bits/sec)
 BANDWIDTH = 50 * 1024 * 1024   # 50Mbps
@@ -39,7 +41,7 @@ for split in range(num_layers-3):
 
         t0 = time.time()
 
-        edge_out, context, meta_edge = wrapper.run_edge(img, split, meta)
+        edge_out, context = wrapper.run_edge(img, split)
 
         torch.cuda.synchronize() if torch.cuda.is_available() else None
 
@@ -53,7 +55,7 @@ for split in range(num_layers-3):
         packet = {
             "edge_out": edge_out.cpu(),
             "context": context,
-            "meta": meta_edge,
+            "meta": meta,
             "split": split
         }
 
@@ -73,11 +75,10 @@ for split in range(num_layers-3):
 
         t1 = time.time()
 
-        final_result, meta_cloud = wrapper.run_cloud(
+        final_result = wrapper.run_cloud(
             edge_out_cloud,
             context,
-            split,
-            meta_edge
+            split
         )
 
         torch.cuda.synchronize() if torch.cuda.is_available() else None

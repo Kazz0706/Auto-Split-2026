@@ -1,0 +1,5 @@
+# 実行コンテナには含めない、モデル解析・変換用の任意依存。
+onnx
+onnxruntime
+torchinfo
+fvcore

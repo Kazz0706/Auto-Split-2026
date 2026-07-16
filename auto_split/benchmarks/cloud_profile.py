@@ -1,12 +1,15 @@
 import time
 import torch
-from split_model import SplitYOLOWrapper
+from pathlib import Path
+from auto_split.src.split_model import SplitYOLOWrapper
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 load_start = time.perf_counter()
-wrapper = SplitYOLOWrapper("yolov8n.pt")
+wrapper = SplitYOLOWrapper(PROJECT_DIR / "models" / "yolov8n.pt")
 load_end = time.perf_counter()
 
-img_path = "images/test.jpg"
+img_path = PROJECT_DIR / "samples" / "test.jpg"
 
 img, orig_img, meta = wrapper.preprocess(img_path)
 

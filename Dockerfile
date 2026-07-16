@@ -1,64 +1,23 @@
-# Python3.11対応, 2026年度版Auto-Split
-# ARG TARGETPLATFORM=linux/amd64
-# FROM --platform=$TARGETPLATFORM python:3.11-slim
-FROM --platform=linux/arm64 python:3.11-slim
+# Raspberry Pi 5（Linux ARM64 / Python 3.11）と合わせた分割推論用イメージ
+FROM --platform=linux/arm64 python:3.11-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
-# 基本ツール
+# OpenCVの実行に必要な共有ライブラリだけを導入する。
 RUN apt-get update && apt-get install -y \
-    git \
-    curl \
-    wget \
-    unzip \
-    nano \
-    build-essential \
     libgl1 \
     libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
     && rm -rf /var/lib/apt/lists/*
-# python:3.11-slimは超軽量なのでGUI系、GL系、threading系が削除されている
 
-# pip 更新
-RUN pip install --upgrade pip
+RUN python -m pip install --no-cache-dir --upgrade pip
 
-COPY requirements-base.txt .
-RUN pip install --no-cache-dir -r requirements-base.txt
-
-COPY requirements-ml.txt .
-RUN pip install --no-cache-dir -r requirements-ml.txt
-
-COPY requirements-ml2.txt .
-RUN pip install --no-cache-dir -r requirements-ml2.txt
+COPY requirements-runtime.txt .
+RUN python -m pip install --no-cache-dir -r requirements-runtime.txt
 
 COPY ./auto_split /app/auto_split
 
-# デフォルト shell
+# Camera ModuleはRaspberry Pi OSのlibcamera/Picamera2と密結合のため、
+# カメラ単体ベンチマークは現時点ではホストOS上で実行する。
 CMD ["/bin/bash"]
-
-
-# volume mount(Macでの編集をコンテナに反映)出来ないので、プログラムが完成したら解放
-# COPY ./auto_split /app/auto_split
-# COPY ./requirements.txt /app/requirements.txt
-# RUN pip install -r /app/requirements.txt
-
-# 流れ: 同一ディレクトリ内でdocker build(イメージ作成) -> docker run(コンテナ起動)
-# docker build -t yolov8-autosplit:py311 .
-# docker build --platform linux/arm64 -t yolov8-autosplit:py311 .
-
-# docker run --rm -it \
-#     -v $(pwd)/auto_split:/app/auto_split \
-#     -v $(pwd)/requirements.txt:/app/requirements.txt \
-#     yolov8-autosplit:py311 \
-#     /bin/bash
-
-# yolov8-containerというコンテナ名にして保存したい場合(rmしない)
-# docker run -it \
-#     --name yolov8-container \
-#     -v $(pwd)/auto_split:/app/auto_split \
-#     -v $(pwd)/requirements.txt:/app/requirements.txt \
-#     <yourname>/yolov8-autosplit:py311 \
-#     /bin/bash

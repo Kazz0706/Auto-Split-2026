@@ -8,13 +8,20 @@ import pickle
 import struct
 import socket
 import cv2
+import os
+from pathlib import Path
 from ultralytics.engine.results import Results
-from split_model import SplitYOLOWrapper   # 共通クラス
+from auto_split.src.split_model import SplitYOLOWrapper
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+MODEL_PATH = PROJECT_DIR / "models" / "yolov8n.pt"
+IMAGE_PATH = PROJECT_DIR / "samples" / "test.jpg"
+OUTPUT_PATH = PROJECT_DIR / "outputs" / "split_result.jpg"
 
 load_start = time.perf_counter()
-wrapper = SplitYOLOWrapper("yolov8n.pt")
+wrapper = SplitYOLOWrapper(MODEL_PATH)
 
-img_path = "images/test.jpg"
+img_path = str(IMAGE_PATH)
 load_end = time.perf_counter()
 
 # -------------------------
@@ -110,8 +117,10 @@ packet = {
 # -------------------------
 # socket送信(ラズパイ→Mac)
 # -------------------------
-HOST = "192.168.12.59"  # ← MacのIP
-PORT = 5001 # ← MacのPORT
+HOST = os.environ.get("CLOUD_HOST")
+if not HOST:
+    raise RuntimeError("環境変数 CLOUD_HOST にクラウド側（Mac/DGX）のIPアドレスを指定してください。")
+PORT = int(os.environ.get("CLOUD_PORT", "5001"))
 
 data = pickle.dumps(packet)
 
@@ -184,7 +193,8 @@ r = Results(
 )
 
 plotted = r.plot()
-cv2.imwrite("result.jpg", plotted)
+OUTPUT_PATH.parent.mkdir(exist_ok=True)
+cv2.imwrite(str(OUTPUT_PATH), plotted)
 
 plot_end = time.perf_counter()
 

@@ -8,11 +8,16 @@ import time
 import json
 import io
 import numpy as np
-from split_model import SplitYOLOWrapper
+import os
+from pathlib import Path
+from auto_split.src.split_model import SplitYOLOWrapper
 from ultralytics.utils.ops import non_max_suppression, scale_boxes
 from ultralytics.engine.results import Results
 
-wrapper = SplitYOLOWrapper("yolov8n.pt")
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+MODEL_PATH = PROJECT_DIR / "models" / "yolov8n.pt"
+
+wrapper = SplitYOLOWrapper(MODEL_PATH)
 
 # 進捗： 計算時間, 通信時間計測する機能を追加
 # メタ情報をpickle, 推論テンソルをtorch.saveでptファイルにして送信して、圧縮高速化
@@ -29,7 +34,7 @@ wrapper = SplitYOLOWrapper("yolov8n.pt")
 # socket受信
 # -------------------------
 HOST = "0.0.0.0"
-PORT = 5001
+PORT = int(os.environ.get("CLOUD_PORT", "5001"))
 
 def recvall(sock, n):
     data = b""

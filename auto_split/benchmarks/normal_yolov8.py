@@ -1,11 +1,14 @@
 from ultralytics import YOLO
 import cv2
+from pathlib import Path
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 def main():
 
-    model_path = "yolov8n.pt"          # モデル
-    img_path = "images/test.jpg"     # 入力画像
-    save_path = "normal_result.jpg"    # 保存先
+    model_path = PROJECT_DIR / "models" / "yolov8n.pt"
+    img_path = PROJECT_DIR / "samples" / "test.jpg"
+    save_path = PROJECT_DIR / "outputs" / "normal_result.jpg"
 
     # モデル読み込み
     model = YOLO(model_path)
@@ -23,7 +26,8 @@ def main():
     plotted = r.plot()
 
     # 保存
-    cv2.imwrite(save_path, plotted)
+    save_path.parent.mkdir(exist_ok=True)
+    cv2.imwrite(str(save_path), plotted)
 
     print("Saved:", save_path)
 
