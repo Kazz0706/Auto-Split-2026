@@ -1,5 +1,6 @@
-# Raspberry Pi 5（Linux ARM64 / Python 3.11）と合わせた分割推論用イメージ
-FROM --platform=linux/arm64 python:3.11-slim-bookworm
+# Raspberry Pi 5（Linux ARM64 / Python 3.11）向けの分割推論用イメージ。
+# 対象プラットフォームは docker build --platform で指定する。
+FROM python:3.11-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1

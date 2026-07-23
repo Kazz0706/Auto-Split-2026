@@ -31,10 +31,19 @@ python -m auto_split.tools.search
 
 ## Docker（分割推論実行用）
 
-`Dockerfile` はRaspberry Piで動作確認したPython 3.11、PyTorch 2.9.0、
-Torchvision 0.24.0、Ultralytics 8.3.222を
-`requirements-runtime.txt` で固定している。TensorFlow、音声処理、ONNX解析は
-実行イメージから除外し、必要な場合だけ `requirements-tools.txt` を利用する。
+`Dockerfile` はPython 3.11、PyTorch 2.9.0、Torchvision 0.24.0、
+Ultralytics 8.3.222を `requirements-runtime.txt` で固定している。
+OpenCV 4.12.0.88の新規導入要件に合わせ、DockerのNumPyは2.2.6を使用する。
+TensorFlow、音声処理、ONNX解析は実行イメージから除外し、必要な場合だけ
+`requirements-tools.txt` を利用する。
+
+ビルドに成功した時点の推移依存も固定する場合は、Pi上で次を実行して
+`requirements-runtime.lock` を保存する。
+
+```bash
+docker run --rm yolov8-autosplit:pi311 python -m pip freeze \
+  > requirements-runtime.lock
+```
 
 ```bash
 docker build --platform linux/arm64 -t yolov8-autosplit:pi311 .
