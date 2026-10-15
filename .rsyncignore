@@ -1,0 +1,23 @@
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store
+
+# Python bytecode and local caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Local Python environments
+venv/
+.venv/
+**/.venv/
+
+# Git and Codex local metadata
+.git/
+.codex/
+.agents/
+
+# Runtime-generated artifacts
+auto_split/outputs/

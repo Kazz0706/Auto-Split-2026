@@ -1,218 +1,236 @@
-# edge.py
-import time
-import json
+"""エッジ側のYOLOv8分割推論クライアント。"""
+
+from __future__ import annotations
+
+import argparse
 import io
+import json
+import os
+import pickle
+import socket
+import statistics
+import struct
+import time
+from pathlib import Path
+
+import cv2
 import numpy as np
 import torch
-import pickle
-import struct
-import socket
-import cv2
-import os
-from pathlib import Path
 from ultralytics.engine.results import Results
+
 from auto_split.src.split_model import SplitYOLOWrapper
+
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 MODEL_PATH = PROJECT_DIR / "models" / "yolov8n.pt"
 IMAGE_PATH = PROJECT_DIR / "samples" / "test.jpg"
-OUTPUT_PATH = PROJECT_DIR / "outputs" / "split_result.jpg"
-
-load_start = time.perf_counter()
-wrapper = SplitYOLOWrapper(MODEL_PATH)
-
-img_path = str(IMAGE_PATH)
-load_end = time.perf_counter()
-
-# -------------------------
-# Timer start
-# -------------------------
-preprocess_start = time.perf_counter()
-total_start = preprocess_start
-
-# 前処理
-img, orig_img, meta = wrapper.preprocess(img_path)
-
-split_point = 3
-print(f"split_point: {split_point}")
-
-preprocess_end = time.perf_counter()
-
-edge_start = time.perf_counter()
-
-# 勾配計算（＝学習用の計算）を完全にオフにする→計算速度向上, メモリ削減(全中間テンソルを保存しないため)
-with torch.inference_mode():
-    edge_out, context = wrapper.run_edge(img, split_point)
-
-# print("save layers:", wrapper.model.save)
-
-# print("context positions:")
-# for i,t in enumerate(context):
-#     if t is not None:
-#         print(i, t.shape)
-edge_end = time.perf_counter()
-
-compression_start = time.perf_counter()
-# -------------------------
-# 量子化（通信量削減）
-# -------------------------
-# float32 -> INT8: 通信量75%削減
-max_val = edge_out.abs().max()
-# protect against zero max by clamping with a small epsilon
-scale_q = max_val.clamp_min(1e-8) / 127
-# INT8 tensorに変更
-edge_out_q = torch.round(edge_out / scale_q).to(torch.int8)
-
-# -------------------------
-# Tensor → torch.save (高速)
-# -------------------------
-tensor_buffer = io.BytesIO()
-torch.save(edge_out_q.cpu(), tensor_buffer)
-tensor_bytes = tensor_buffer.getvalue()
-
-# -------------------------
-# context → torch.save
-# -------------------------
-context_buffer = io.BytesIO()
-
-# Noneを除いて保存 → 通信量削減, Noneのpickle経由防止
+DEFAULT_OUTPUT_DIR = PROJECT_DIR / "outputs"
 
 
-# SplitYOLOWrapperのneeded集合を取得
-needed = wrapper.get_needed_context(split_point)
-context_indices = []
-context_tensors = []
-context_scales = []
-for i in sorted(needed):
-    t = context[i]
-    if t is not None:
-        context_indices.append(i)
-        t_cpu = t.cpu()
-        max_val = t_cpu.abs().max()
-        # per-tensor scale with epsilon protection to avoid division-by-zero
-        scale_c = max_val.clamp_min(1e-8) / 127
-        scale_c_f = float(scale_c.cpu().item())
-        context_scales.append(scale_c_f)
-        context_tensors.append(torch.round(t_cpu / scale_c).to(torch.int8))
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", choices=("image", "camera"), default="image")
+    parser.add_argument("--image", type=Path, default=IMAGE_PATH)
+    parser.add_argument("--model", type=Path, default=MODEL_PATH)
+    parser.add_argument("--split", type=int, default=3)
+    parser.add_argument("--cloud-host", default=os.environ.get("CLOUD_HOST"))
+    parser.add_argument("--cloud-port", type=int, default=int(os.environ.get("CLOUD_PORT", "5001")))
+    parser.add_argument("--frames", type=int, default=1, help="処理するフレーム数")
+    parser.add_argument("--camera-width", type=int, default=1280)
+    parser.add_argument("--camera-height", type=int, default=720)
+    parser.add_argument("--camera-warmup", type=int, default=10)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--output-prefix", default="split")
+    parser.add_argument("--no-save", action="store_true")
+    return parser.parse_args()
 
-print(f"送信context_indices: {context_indices}")
 
-# tensor list を保存
-torch.save(context_tensors, context_buffer)
-context_bytes = context_buffer.getvalue()
+class CameraFrameSource:
+    """Picamera2を一度だけ起動し、連続してBGRフレームを取得する。"""
 
-meta_bytes = json.dumps(meta).encode() # metaをpickle → json
+    def __init__(self, args: argparse.Namespace):
+        self.args = args
+        self.camera = None
 
-# 送信パケット
-packet = {
-    "tensor": tensor_bytes,
-    "context": context_bytes,           # bytes
-    "context_idx": np.array(context_indices, dtype=np.int32),     # list
-    "meta": meta_bytes,
-    "scale_q": float(scale_q.cpu().item()), # 復元用 (safe float)
-    "context_scales": np.array(context_scales, dtype=np.float32),
-    "split": split_point
-}
+    def __enter__(self) -> "CameraFrameSource":
+        try:
+            from picamera2 import Picamera2
+        except ImportError as exc:
+            raise SystemExit(
+                "Picamera2が必要です。Raspberry Pi OS上で "
+                "`sudo apt install -y python3-picamera2` を実行してください。"
+            ) from exc
 
-# -------------------------
-# socket送信(ラズパイ→Mac)
-# -------------------------
-HOST = os.environ.get("CLOUD_HOST")
-if not HOST:
-    raise RuntimeError("環境変数 CLOUD_HOST にクラウド側（Mac/DGX）のIPアドレスを指定してください。")
-PORT = int(os.environ.get("CLOUD_PORT", "5001"))
+        self.camera = Picamera2()
+        config = self.camera.create_video_configuration(
+            # Picamera2のBGR888はNumPy上ではRGB順。下でOpenCV用BGRへ変換する。
+            main={"size": (self.args.camera_width, self.args.camera_height), "format": "BGR888"}
+        )
+        self.camera.configure(config)
+        self.camera.start()
+        time.sleep(1.0)
+        for _ in range(self.args.camera_warmup):
+            self.camera.capture_array("main")
+        return self
 
-data = pickle.dumps(packet)
+    def capture(self) -> tuple[np.ndarray, dict[str, float]]:
+        capture_start = time.perf_counter()
+        frame_rgb = self.camera.capture_array("main")
+        capture_end = time.perf_counter()
 
-# 長さヘッダ（4byte）
-header = struct.pack(">I", len(data))
+        conversion_start = time.perf_counter()
+        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        conversion_end = time.perf_counter()
+        return frame_bgr, {
+            "camera_capture_ms": (capture_end - capture_start) * 1000,
+            "rgb_to_bgr_ms": (conversion_end - conversion_start) * 1000,
+        }
 
-compression_end = time.perf_counter()
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if self.camera is not None:
+            self.camera.stop()
 
-print(f"Communication size (KB): {(4+len(data)) / 1024:.2f} KB")
 
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    s.connect((HOST, PORT))
-    s.sendall(header + data)  # 🔥 まとめて送る
+def recvall(sock: socket.socket, size: int) -> bytes:
+    chunks = bytearray()
+    while len(chunks) < size:
+        chunk = sock.recv(size - len(chunks))
+        if not chunk:
+            raise ConnectionError("クラウド側が応答の途中で接続を閉じました。")
+        chunks.extend(chunk)
+    return bytes(chunks)
 
-    # -------------------------
-    # Cloud結果受信
-    # -------------------------
-    def recvall(sock, n):
-        data = b""
-        while len(data) < n:
-            packet = sock.recv(n - len(data))
-            if not packet:
-                return None
-            data += packet
-        return data
 
-    header = recvall(s, 4)
-    msg_len = struct.unpack(">I", header)[0]
+def build_packet(wrapper, edge_out, context, meta, split_point) -> tuple[bytes, float]:
+    start = time.perf_counter()
+    scale_q = edge_out.abs().max().clamp_min(1e-8) / 127
+    edge_out_q = torch.round(edge_out / scale_q).to(torch.int8)
+    tensor_buffer = io.BytesIO()
+    torch.save(edge_out_q.cpu(), tensor_buffer)
 
-    data = recvall(s, msg_len)
+    context_indices, context_tensors, context_scales = [], [], []
+    for index in sorted(wrapper.get_needed_context(split_point)):
+        tensor = context[index]
+        if tensor is None:
+            continue
+        tensor_cpu = tensor.cpu()
+        scale = tensor_cpu.abs().max().clamp_min(1e-8) / 127
+        context_indices.append(index)
+        context_scales.append(float(scale.item()))
+        context_tensors.append(torch.round(tensor_cpu / scale).to(torch.int8))
 
-result_packet = pickle.loads(data)
+    context_buffer = io.BytesIO()
+    torch.save(context_tensors, context_buffer)
+    packet = {
+        "tensor": tensor_buffer.getvalue(),
+        "context": context_buffer.getvalue(),
+        "context_idx": np.array(context_indices, dtype=np.int32),
+        "meta": json.dumps(meta).encode(),
+        "scale_q": float(scale_q.item()),
+        "context_scales": np.array(context_scales, dtype=np.float32),
+        "split": split_point,
+    }
+    return pickle.dumps(packet), (time.perf_counter() - start) * 1000
 
-boxes = result_packet["boxes"]
-meta = result_packet["meta"]
-cloud_time = result_packet["cloud_time"]
 
-total_end = time.perf_counter()
+def request_cloud(host: str, port: int, packet: bytes) -> tuple[dict, float]:
+    start = time.perf_counter()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.connect((host, port))
+        sock.sendall(struct.pack(">I", len(packet)) + packet)
+        response_size = struct.unpack(">I", recvall(sock, 4))[0]
+        response = recvall(sock, response_size)
+    return pickle.loads(response), (time.perf_counter() - start) * 1000
 
-# Calculate time
-plot_start = time.perf_counter()
 
-orig_img = cv2.imread(img_path)
+def save_result(orig_img: np.ndarray, boxes: list, names: dict, path: Path) -> float:
+    start = time.perf_counter()
+    # Ultralytics expects detections in an (N, 6) or (N, 7) tensor.  An empty
+    # Python list becomes a 1-D tensor with shape (0,), so preserve the box
+    # width explicitly when the cloud found no objects.
+    boxes_tensor = (
+        torch.tensor(boxes, dtype=torch.float32)
+        if boxes
+        else torch.empty((0, 6), dtype=torch.float32)
+    )
+    result = Results(orig_img=orig_img, path="frame", names=names, boxes=boxes_tensor)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(path), result.plot())
+    return (time.perf_counter() - start) * 1000
 
-# OpenCVで自作描画plot
-# for box in boxes:
-#     x1,y1,x2,y2,conf,cls = box
-#     label = f"{wrapper.yolo.names[int(cls)]} {conf:.2f}"
 
-#     cv2.rectangle(orig_img,(int(x1),int(y1)),(int(x2),int(y2)),(0,255,0),3)
+def profile_frame(wrapper, args, frame_index, orig_img, source_timing) -> dict[str, float]:
+    preprocess_start = time.perf_counter()
+    img, orig_img, meta = wrapper.preprocess_frame(orig_img)
+    preprocess_ms = (time.perf_counter() - preprocess_start) * 1000
 
-#     cv2.putText(
-#         orig_img,
-#         label,
-#         (int(x1), int(y1)-10),
-#         cv2.FONT_HERSHEY_SIMPLEX,
-#         0.5,
-#         (0,255,0),
-#         2
-#     )
+    edge_start = time.perf_counter()
+    with torch.inference_mode():
+        edge_out, context = wrapper.run_edge(img, args.split)
+    edge_ms = (time.perf_counter() - edge_start) * 1000
 
-# cv2.imwrite("result.jpg", orig_img)
+    packet, compression_ms = build_packet(wrapper, edge_out, context, meta, args.split)
+    result_packet, roundtrip_ms = request_cloud(args.cloud_host, args.cloud_port, packet)
 
-# Ultralyticsを用いて描画
-r = Results(
-    orig_img=orig_img,
-    path="img_path",
-    names=wrapper.yolo.names,
-    boxes=torch.tensor(boxes)
-)
+    plot_ms = 0.0
+    if not args.no_save:
+        output_path = args.output_dir / f"{args.output_prefix}_{frame_index:06d}.jpg"
+        plot_ms = save_result(orig_img, result_packet["boxes"], wrapper.yolo.names, output_path)
 
-plotted = r.plot()
-OUTPUT_PATH.parent.mkdir(exist_ok=True)
-cv2.imwrite(str(OUTPUT_PATH), plotted)
+    metrics = {
+        **source_timing,
+        **{f"preprocess_{key}": value for key, value in wrapper.last_preprocess_timing.items()},
+        "preprocess_total_ms": preprocess_ms,
+        "edge_inference_ms": edge_ms,
+        "compression_and_serialization_ms": compression_ms,
+        "communication_and_cloud_roundtrip_ms": roundtrip_ms,
+        "cloud_processing_ms": result_packet["cloud_time"] * 1000,
+        "result_plot_ms": plot_ms,
+        "end_to_end_ms_without_plot": sum(source_timing.values()) + preprocess_ms + edge_ms + compression_ms + roundtrip_ms,
+    }
+    print(
+        f"frame={frame_index:06d} size_kb={(4 + len(packet)) / 1024:.2f} "
+        f"end_to_end_ms={metrics['end_to_end_ms_without_plot']:.3f}"
+    )
+    return metrics
 
-plot_end = time.perf_counter()
 
-# Calculate time
-load_time = load_end - load_start
-pre_time = preprocess_end - preprocess_start
-comp_time = compression_end - compression_start
-edge_time = edge_end - edge_start
-cloud_time = cloud_time
-total_time = total_end - total_start
-plot_time = plot_end - plot_start
-comm_time = total_time - edge_time - cloud_time - pre_time - comp_time
+def print_summary(records: list[dict[str, float]]) -> None:
+    print("\n===== Edge → Cloud Split Inference Summary =====")
+    for name in records[0]:
+        values = [record[name] for record in records]
+        print(f"{name}: mean={statistics.fmean(values):.3f} ms")
+    print(f"throughput_fps: {1000 / statistics.fmean([r['end_to_end_ms_without_plot'] for r in records]):.3f}")
 
-print(f"Model loading time: {load_time*1000:.3f} ms")
-print(f"Edge time: {edge_time*1000:.3f} ms")
-print(f"Preprocessing time: {pre_time*1000:.3f} ms")
-print(f"Compression time: {comp_time*1000:.3f} ms")
-print(f"Communication time: {comm_time*1000:.3f} ms")
-print(f"Cloud time: {cloud_time*1000:.3f} ms")
-print(f"Total time (Except Model loading & Plot): {total_time*1000:.3f} ms")
-print(f"Plot time: {plot_time*1000:.3f} ms")
+
+def main() -> None:
+    args = parse_args()
+    if not args.cloud_host:
+        raise SystemExit("--cloud-host または環境変数 CLOUD_HOST を指定してください。")
+    if args.frames < 1:
+        raise SystemExit("--frames は1以上にしてください。")
+    if not args.model.is_file():
+        raise FileNotFoundError(f"モデルが見つかりません: {args.model}")
+
+    load_start = time.perf_counter()
+    wrapper = SplitYOLOWrapper(args.model)
+    print(f"model_loading_ms: {(time.perf_counter() - load_start) * 1000:.3f}")
+
+    records = []
+    if args.source == "camera":
+        with CameraFrameSource(args) as camera:
+            for frame_index in range(1, args.frames + 1):
+                frame, source_timing = camera.capture()
+                records.append(profile_frame(wrapper, args, frame_index, frame, source_timing))
+    else:
+        image = cv2.imread(str(args.image))
+        if image is None:
+            raise FileNotFoundError(f"画像を読み込めません: {args.image}")
+        for frame_index in range(1, args.frames + 1):
+            records.append(profile_frame(wrapper, args, frame_index, image.copy(), {}))
+
+    print_summary(records)
+
+
+if __name__ == "__main__":
+    main()

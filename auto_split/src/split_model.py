@@ -58,55 +58,68 @@ class SplitYOLOWrapper:
     # 画像前処理
     # -------------------------
     def preprocess(self, img_path):
-        # JPEG / PNG → NumPy配列
-        t0 = time.perf_counter()
-        img0 = cv2.imread(img_path) # OpenCVは BGR順
-        print(f"Original image shape: {img0.shape}") # (H, W, C)
-        # 画像ではrow = y（縦）, col = x（横）のため、H, Wの順番
-        t1 = time.perf_counter()
-        h0, w0 = img0.shape[:2] # (H0, W0, 3)から(H0, W0)を取り出す
+        """画像ファイルを読み込み、共通のフレーム前処理へ渡す。"""
+        read_start = time.perf_counter()
+        img0 = cv2.imread(str(img_path))
+        read_end = time.perf_counter()
+        if img0 is None:
+            raise FileNotFoundError(f"画像を読み込めません: {img_path}")
 
-        # YOLOと同じletterbox
-        # new_shape : 出力サイズ, stride: モデルストライド整合用
-        letterbox = LetterBox(new_shape=640, stride=32) # 640*640の正方形: 画像の長辺に合わせて余白は0で埋める
+        img, orig_img, meta = self.preprocess_frame(img0)
+        self.last_preprocess_timing["image_read_ms"] = (read_end - read_start) * 1000
+        print(f"image read_ms: {self.last_preprocess_timing['image_read_ms']:.3f}")
+        return img, orig_img, meta
 
-        img = letterbox(image=img0) # image: 入力画像
-        t2 = time.perf_counter()
-        # -------------------------
-        # meta情報計算
-        # -------------------------
+    def preprocess_frame(self, img0):
+        """BGRのNumPyフレームをYOLOv8入力テンソルへ変換する。
+
+        Picamera2やOpenCVカメラのフレームをファイル保存せず、そのまま
+        分割推論の前処理へ渡すための共通経路。
+        """
+        if img0 is None or img0.ndim != 3 or img0.shape[2] != 3:
+            raise ValueError("img0 は形状 (H, W, 3) のBGR NumPy配列である必要があります。")
+
+        start = time.perf_counter()
+        print(f"Original image shape: {img0.shape}")
+        h0, w0 = img0.shape[:2]
+
+        letterbox = LetterBox(new_shape=640, stride=32)
+        img = letterbox(image=img0)
+        letterbox_end = time.perf_counter()
+
         h, w = img.shape[:2]
-
         scale = min(640 / h0, 640 / w0)
         pad_x = (640 - w0 * scale) / 2
         pad_y = (640 - h0 * scale) / 2
-
         meta = {
             "scale": scale,
             "pad": (pad_x, pad_y),
             "orig_shape": (h0, w0),
-            "input_shape": (h, w)
+            "input_shape": (h, w),
         }
 
-        img = img[:, :, ::-1]  # BGR → RGB
-        img = img.transpose(2, 0, 1) # (H, W, C) → (C, H, W)=Pytorch仕様
-        img = np.ascontiguousarray(img) # メモリを連続配置してPyTorch tensor変換高速化
-        t3 = time.perf_counter()
+        img = img[:, :, ::-1]
+        img = img.transpose(2, 0, 1)
+        img = np.ascontiguousarray(img)
+        layout_end = time.perf_counter()
 
-        img = torch.from_numpy(img).float() / 255.0 # 勾配爆発を防ぐため # floatを明示
-        # バッチ次元追加: (3, 640, 640)→(1, 3, 640, 640)=YOLOの入力形式(N, C, H, W)
-        t4 = time.perf_counter()
+        img = torch.from_numpy(img).float() / 255.0
+        tensor_end = time.perf_counter()
 
-        img = img.unsqueeze(0).to(self.device) # .to(self.device)でデバイス転送
-        t5 = time.perf_counter()
+        img = img.unsqueeze(0).to(self.device)
+        device_end = time.perf_counter()
 
-        print("imread     :", (t1-t0)*1000)
-        print("letterbox  :", (t2-t1)*1000)
-        print("transpose  :", (t3-t2)*1000)
-        print("tensor     :", (t4-t3)*1000)
-        print("to device  :", (t5-t4)*1000)
+        self.last_preprocess_timing = {
+            "letterbox_ms": (letterbox_end - start) * 1000,
+            "layout_conversion_ms": (layout_end - letterbox_end) * 1000,
+            "tensor_conversion_ms": (tensor_end - layout_end) * 1000,
+            "device_transfer_ms": (device_end - tensor_end) * 1000,
+            "total_ms": (device_end - start) * 1000,
+        }
+        for name, value in self.last_preprocess_timing.items():
+            print(f"preprocess {name}: {value:.3f} ms")
 
-        return img, img0, meta ### img0は必要？
+        return img, img0, meta
 
     # -------------------------
     # Edge

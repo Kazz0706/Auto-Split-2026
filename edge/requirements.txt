@@ -1,0 +1,13 @@
+# Raspberry Pi OS native camera-edge environment.
+# Install these packages INSIDE edge/.venv.
+#
+# Picamera2 is deliberately not listed here.  It must be installed by apt as
+# python3-picamera2 together with Raspberry Pi OS's matching libcamera stack.
+torch==2.9.0
+torchvision==0.24.0
+ultralytics==8.3.222
+numpy==2.2.6
+opencv-python==4.12.0.88
+Pillow==12.0.0
+# 6.0 has no Python 3.13 wheel and attempts a source build on Pi OS Trixie.
+PyYAML==6.0.3

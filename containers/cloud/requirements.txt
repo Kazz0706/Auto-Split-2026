@@ -1,0 +1,10 @@
+# MacBook cloud / future DGX Spark cloud runtime (CPU baseline).
+# For DGX, create a separate GPU-specific requirements file and Dockerfile;
+# do not add CUDA packages to this portable baseline image.
+torch==2.9.0
+torchvision==0.24.0
+ultralytics==8.3.222
+numpy==2.2.6
+opencv-python==4.12.0.88
+Pillow==12.0.0
+PyYAML==6.0

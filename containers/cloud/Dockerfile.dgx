@@ -1,0 +1,27 @@
+# DGX Spark (Grace Blackwell / ARM64) GPU cloud image.
+# Build this Dockerfile on the DGX Spark after authenticating to nvcr.io.
+FROM nvcr.io/nvidia/pytorch:26.06-py3
+
+ENV PYTHONUNBUFFERED=1 \
+    YOLO_CONFIG_DIR=/tmp/Ultralytics
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 \
+    libgl1 \
+    libxcb1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Keep the NGC image's CUDA-enabled torch and torchvision. Installing a
+# CPU-pinned torch here would disable GPU inference.
+COPY containers/cloud/requirements-dgx.txt /tmp/requirements.txt
+# The NGC base also contains Debian-managed Python packages without pip RECORD
+# metadata.  Do not try to uninstall them; install the project dependencies in
+# the pip-managed location instead.
+RUN python3 -m pip install --no-cache-dir --ignore-installed -r /tmp/requirements.txt
+
+COPY auto_split /app/auto_split
+
+EXPOSE 5001
+CMD ["python3", "-m", "auto_split.src.cloud"]

@@ -13,6 +13,37 @@ python -m auto_split.src.cloud
 python -m auto_split.src.edge
 ```
 
+### カメラを用いる分割推論
+
+`edge.py` は、静止画（既定値）とPicamera2のフレームを同一の
+`SplitYOLOWrapper.preprocess_frame()` へ渡す。カメラモードでは、JPEGへの保存・
+再読込を行わず、カメラ取得、RGB→BGR変換、前処理、前半推論、量子化・
+シリアライズ、通信・クラウド往復を個別に記録する。
+
+まずクラウド側を起動してから、Raspberry Pi OS上で実行する。
+
+```bash
+python -m auto_split.src.edge \
+  --source camera \
+  --cloud-host 192.168.12.30 \
+  --frames 100 \
+  --camera-width 1280 \
+  --camera-height 720 \
+  --output-dir auto_split/outputs/camera_split \
+  --output-prefix camera_split
+```
+
+`--frames 100` の場合、`camera_split_000001.jpg` から
+`camera_split_000100.jpg` までを保存する。エッジは1フレームごとに
+「取得→前処理→前半推論→クラウド往復→結果保存」を完了してから次のフレームを
+取得する同期方式である。処理中にカメラ側で生成された古いフレームは利用しないため、
+低遅延の基準測定に適している。将来のスループット最適化では、別途パイプライン化する。
+
+このカメラモードには、Pi OSの `python3-picamera2` とlibcameraが必要である。
+現在の軽量Dockerイメージにはこれらを含めないため、まずホストOSで分割推論の
+カメラ入力を検証する。Docker内でのカメラ利用は、Pi OS/libcamera専用の
+エッジイメージとデバイス公開を追加する次段階で扱う。
+
 ## データと実験
 
 - `models/`: 学習済み重み。現在は `yolov8n.pt`。
@@ -88,4 +119,51 @@ python -m auto_split.benchmarks.raspi_camera_yolov8_benchmark --frames 100 --war
 ```bash
 python -m auto_split.benchmarks.raspi_camera_yolov8_benchmark \
   --save auto_split/outputs/camera_detection.jpg
+```
+
+### Pi CameraからDGXへの全オフロード比較
+
+`offload_edge.py` と `offload_cloud.py` は、既存の分割推論とは別に、
+DGXで融合済みの `YOLO.predict()` 全体を実行する比較用プログラムである。
+`raw` はBGR uint8、`jpeg` はPi上でエンコードしたJPEGを送る。
+
+DGXではGPUコンテナを起動し、ポート5002を公開する。
+
+```bash
+docker run --rm -it \
+  --name autosplit-offload-dgx \
+  --gpus=all \
+  --ipc=host \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  -p 5002:5002 \
+  -e YOLO_CONFIG_DIR=/tmp/Ultralytics \
+  -v "$(pwd)/auto_split:/app/auto_split" \
+  yolov8-autosplit-cloud:dgx-gpu-20260727 \
+  python3 -m auto_split.src.offload_cloud --port 5002 --device 0
+```
+
+Piではnative venvを有効化して、Raw全送信を実行する。
+
+```bash
+source edge/.venv/bin/activate
+python -m auto_split.src.offload_edge \
+  --source camera \
+  --transport raw \
+  --raw-quantization off \
+  --cloud-host <DGXのLAN_IP> \
+  --cloud-port 5002 \
+  --warmup 10 \
+  --frames 100 \
+  --no-save
+```
+
+JPEG全送信は、`--transport jpeg --jpeg-quality 95` に変更する。
+Rawフレームはもともとuint8のため、`--raw-quantization int8` は通信量を減らさず、
+近似量子化の処理時間・検出結果への影響だけを比較する。
+
+検出結果をPiへ保存する場合は`--no-save`を外し、必要に応じて出力先を指定する。
+
+```bash
+--output-dir auto_split/outputs/offload_raw --output-prefix raw --save-format png
 ```

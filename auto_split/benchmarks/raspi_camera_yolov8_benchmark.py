@@ -72,7 +72,8 @@ def main() -> None:
 
     camera = Picamera2()
     config = camera.create_video_configuration(
-        main={"size": (args.width, args.height), "format": "RGB888"}
+        # Picamera2のBGR888はNumPy上ではRGB順。下でOpenCV用BGRへ変換する。
+        main={"size": (args.width, args.height), "format": "BGR888"}
     )
     camera.configure(config)
     camera.start()

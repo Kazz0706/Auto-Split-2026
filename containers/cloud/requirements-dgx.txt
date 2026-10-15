@@ -1,0 +1,7 @@
+# DGX Spark GPU runtime additions. torch and torchvision are intentionally
+# omitted: nvcr.io/nvidia/pytorch supplies CUDA-enabled, matched versions.
+ultralytics==8.3.222
+numpy==2.2.6
+opencv-python-headless==4.12.0.88
+Pillow==12.0.0
+PyYAML==6.0.3

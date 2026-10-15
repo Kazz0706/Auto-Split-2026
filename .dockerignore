@@ -1,7 +1,10 @@
 .git/
+.rsyncignore
 .DS_Store
+backups/
 **/.DS_Store
 **/__pycache__/
 **/*.pyc
+**/.venv/
 auto_split/outputs/
 venv/
